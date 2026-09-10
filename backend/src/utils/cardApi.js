@@ -23,15 +23,18 @@
 const scryfallApi = require('../scryfallApi');
 const tcgApi = require('../tcgApi');
 const tcgdexApi = require('../tcgdexApi');
+const lorcastApi = require('../lorcastApi');
 const languages = require('./languages');
 
 const isMtgId = (id) => String(id || '').startsWith('mtg-');
 const isTcgdexId = (id) => String(id || '').startsWith('tcgdex-');
+const isLorcanaId = (id) => String(id || '').startsWith('lorcana-');
 
-// The game an ID implies. `game` from the request wins when it says MTG, since a
-// caller that knows better should be believed; everything else is Pokémon.
+// The game an ID implies. `game` from the request wins when explicit; otherwise inferred from prefix.
 function gameOf(id, requestedGame) {
-  return (requestedGame === 'mtg' || isMtgId(id)) ? 'mtg' : 'pokemon';
+  if (requestedGame === 'mtg' || isMtgId(id)) return 'mtg';
+  if (requestedGame === 'lorcana' || isLorcanaId(id)) return 'lorcana';
+  return 'pokemon';
 }
 
 // Fill in a row that was cached from a partial source before it is relied on.
@@ -47,7 +50,9 @@ async function hydrate(id) {
 // Fetch a card from whichever provider minted its ID. Returns null when that
 // provider does not have it.
 async function getCardById(id, { game, tcgApiKey = '' } = {}) {
-  if (gameOf(id, game) === 'mtg') return await scryfallApi.getCardById(id);
+  const g = gameOf(id, game);
+  if (g === 'mtg') return await scryfallApi.getCardById(id);
+  if (g === 'lorcana') return await lorcastApi.getCardById(id);
   if (isTcgdexId(id)) return await tcgdexApi.getCardById(id);
   return await tcgApi.getCardById(id, tcgApiKey);
 }
@@ -68,14 +73,54 @@ async function getCardById(id, { game, tcgApiKey = '' } = {}) {
 async function printingInLanguage(card, language) {
   if (!card) return null;
   if (languages.toName(card.language) === languages.toName(language)) return null;
-  // MTG addresses a printing by set + collector number, which read the same in
-  // every language. TCGdex ids carry their own language code and swap directly.
-  if (gameOf(card.id) === 'mtg') {
+  const g = gameOf(card.id, card.game);
+  if (g === 'mtg') {
     const set = String(card.set_id || '').replace(/^mtg-/, '');
     return await scryfallApi.getPrintingInLang(set, card.number, language).catch(() => null);
   }
-  if (!isTcgdexId(card.id)) return null;
-  return await tcgdexApi.getPrintingInLang(card.id, language).catch(() => null);
+  if (g === 'pokemon') {
+    if (isTcgdexId(card.id)) {
+      const match = await tcgdexApi.getPrintingInLang(card.id, language).catch(() => null);
+      if (match) return match;
+    }
+    // Fallback for pokemontcg.io or unmatched IDs: query TCGdex by set + number
+    if (card.set_id && card.number) {
+      const langCode = languages.toCode(language);
+      const res = await tcgdexApi.searchCards({ set: card.set_id, number: card.number, lang: langCode }).catch(() => null);
+      if (res && res.cards && res.cards.length) {
+        const found = res.cards.find(c => {
+          const a = String(c.number || '').replace(/^0+/, '');
+          const b = String(card.number || '').replace(/^0+/, '');
+          return a === b || c.number === card.number;
+        });
+        if (found) return found;
+      }
+    }
+    if (card.name) {
+      const { getCardDisplayName } = require('./langHelper');
+      const targetName = languages.toName(language);
+      const translated = getCardDisplayName(card.name, language, card.printed_name, 'pokemon');
+      if (translated && translated !== card.name) {
+        return {
+          ...card,
+          language: targetName,
+          printed_name: translated,
+        };
+      }
+    }
+    return null;
+  }
+  if (g === 'lorcana') {
+    const { translateLorcanaName } = require('./lorcanaHelper');
+    const targetName = languages.toName(language);
+    const translated = translateLorcanaName(card.name, language);
+    return {
+      ...card,
+      language: targetName,
+      printed_name: translated,
+    };
+  }
+  return null;
 }
 
-module.exports = { isMtgId, isTcgdexId, gameOf, hydrate, getCardById, printingInLanguage };
+module.exports = { isMtgId, isTcgdexId, isLorcanaId, gameOf, hydrate, getCardById, printingInLanguage };

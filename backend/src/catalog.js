@@ -29,7 +29,7 @@ const MODEL_DIR = process.env.CV_MODEL_DIR || path.join(__dirname, '..', 'data',
 const SIZE = 448;
 const MEAN = [0.485, 0.456, 0.406];
 const STD = [0.229, 0.224, 0.225];
-const GAMES = ['mtg', 'pokemon'];
+const GAMES = ['mtg', 'pokemon', 'lorcana'];
 
 const suffix = (lang) => (!lang || lang === 'en' || lang === 'English' ? '' : `-${String(lang).toLowerCase()}`);
 const binPath = (game, lang) => path.join(MODEL_DIR, `milo-${game}${suffix(lang)}-local.bin`);
@@ -122,22 +122,34 @@ async function newSetCount(game, lang = 'English') {
     // Scoped to the language, or a Spanish catalog would be measured against the
     // ENGLISH cache and report whatever English happens to be missing: measured
     // 98 for both mtg/English and mtg/Spanish while the Spanish cache held 1,205
-    // cards against English's 103,656. Invisible today only because no local MTG
-    // catalog exists to ask, which is exactly how it would have shipped.
-    const row = await db.get(
-      `SELECT COUNT(*) n FROM sets s
-        WHERE s.game = ? AND COALESCE(s.total, 0) > 0
-          AND LOWER(CASE WHEN s.id LIKE 'mtg-%' THEN SUBSTR(s.id, 5) ELSE s.id END) NOT IN (
-            SELECT set_id FROM set_data_gaps WHERE game = s.game AND language = ?
-          )
-          AND NOT EXISTS (
-            SELECT 1 FROM card_cache c
-             WHERE c.game = s.game AND c.language = ?
-               AND LOWER(c.set_id) = LOWER(CASE WHEN s.id LIKE 'mtg-%' THEN SUBSTR(s.id, 5) ELSE s.id END)
-          )`,
-      [game, lang, lang]
+    // cards against English's 103,656.
+    //
+    // Compared in JS, exactly like the Pokemon branch above, and for the same
+    // reason it has to be: the id namespaces differ, so the test needs LOWER() on
+    // both sides and an OR between the prefixed and the bare form. Neither side can
+    // use idx_card_cache_set_num, so as a correlated NOT EXISTS this re-scanned the
+    // WHOLE of card_cache once per set. Measured against 1,047 MTG sets and 126k
+    // cached rows: 9.6s with 50 sets uncached, 28s with 400 — on the single sqlite3
+    // connection, so every other request in the app queues behind it. That is why
+    // one Admin page load 504'd and took Users and the dashboard down with it (#49).
+    // It only ever ran once an MTG catalog was built, because list() asks for
+    // newSets only when `built` — which is why deleting the milo-mtg-local files
+    // "fixed" it. One pass over each table instead: same answer, ~80ms.
+    const cached = new Set((await db.all(
+      `SELECT DISTINCT LOWER(set_id) sid FROM card_cache WHERE game = ? AND language = ?`,
+      [game, lang]
+    )).map(r => r.sid));
+    const rows = await db.all(
+      `SELECT id FROM sets WHERE game = ? AND COALESCE(total, 0) > 0`, [game]
     );
-    return row ? row.n : null;
+    // The `sets` table prefixes ids ("mtg-fdn", "lorcana-tfc") while card_cache
+    // holds the bare code ("fdn"). Both forms are checked, which is what the OR in
+    // the old query did — dropping either one reports every set as new.
+    const bare = (id) => String(id).toLowerCase().replace(/^(?:mtg|lorcana)-/, '');
+    return rows.filter(r =>
+      !gaps.has(bare(r.id))
+      && !cached.has(String(r.id).toLowerCase())
+      && !cached.has(bare(r.id))).length;
   } catch {
     return null;
   }
@@ -278,9 +290,16 @@ async function setCounts(game, lang = 'English') {
 
   const sets = {};
   for (const r of rows) {
-    const e = sets[r.sid] || (sets[r.sid] = { cached: 0, embedded: 0 });
+    const sid = r.sid;
+    const bare = sid.replace(/^(mtg|lorcana)-/, '');
+    const e = sets[sid] || (sets[sid] = { cached: 0, embedded: 0 });
     e.cached++;
     if (embedded && embedded.has(r.id)) e.embedded++;
+    if (bare !== sid) {
+      const eBare = sets[bare] || (sets[bare] = { cached: 0, embedded: 0 });
+      eBare.cached++;
+      if (embedded && embedded.has(r.id)) eBare.embedded++;
+    }
   }
   return {
     game, lang, sets,
@@ -375,12 +394,16 @@ async function embedPhase(job) {
   // Foundations vectors built last week, since this phase writes exactly the rows
   // it embedded.
   const scoped = job.sets && job.sets.length;
+  const setFilter = scoped ? job.sets.flatMap(s => {
+    const bare = s.replace(/^(mtg|lorcana)-/, '');
+    return [bare, `${job.game}-${bare}`];
+  }) : [];
   const rows = await db.all(
     `SELECT id, image_url FROM card_cache
       WHERE game = ? AND language = ? AND image_url IS NOT NULL AND image_url != ''
-        ${scoped ? `AND LOWER(set_id) IN (${job.sets.map(() => '?').join(',')})` : ''}
+        ${scoped ? `AND LOWER(set_id) IN (${setFilter.map(() => '?').join(',')})` : ''}
       ORDER BY id`,
-    scoped ? [job.game, job.lang, ...job.sets.map(s => String(s).toLowerCase())] : [job.game, job.lang]
+    scoped ? [job.game, job.lang, ...setFilter.map(s => String(s).toLowerCase())] : [job.game, job.lang]
   );
   job.phase = 'embed';
   job.total = rows.length;
@@ -420,7 +443,13 @@ async function embedPhase(job) {
   // Swapped here rather than in tcgdexApi.imageUrl on purpose: card_cache's url is
   // what the frontend renders, and making every grid thumbnail high-res would cost
   // the whole app bandwidth to fix one pipeline.
-  const embedUrl = (row) => row.image_url.replace(/\/low\.png$/, '/high.png');
+  const embedUrl = (row) => {
+    let url = row.image_url.replace(/\/low\.png$/, '/high.png');
+    if (url.includes('cards.lorcast.io/card/digital/')) {
+      url = url.replace(/\/card\/digital\/(?:small|normal)\//, '/card/digital/large/');
+    }
+    return url;
+  };
 
   // Scryfall's image CDN rejects a request with no User-Agent — 400, not 403, which
   // reads like a bad URL. Version comes from package.json rather than a literal: the
@@ -544,4 +573,4 @@ function start(game, lang = 'English', opts = {}) {
 let last = null;
 const lastResult = () => last;
 
-module.exports = { list, listLanguages, setCounts, keptFromPrev, start, stop, state, lastResult, binPath, metaPath };
+module.exports = { list, listLanguages, setCounts, newSetCount, keptFromPrev, start, stop, state, lastResult, binPath, metaPath, GAMES };
