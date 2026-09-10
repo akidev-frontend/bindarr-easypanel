@@ -76,11 +76,36 @@ router.get('/oidc/callback', authLimiter, async (req, res) => {
     // 1. Match by existing oidc_sub
     let user = await db.get(`SELECT * FROM users WHERE oidc_sub = ?`, [sub]);
 
-    // 2. Fallback: match by username and link oidc_sub
+    // 2. Fallback: attach this identity to an existing account with the same
+    //    username — only when the operator has said their IdP's usernames can be
+    //    trusted for it. See isUsernameLinkEnabled: with it on by default, anyone
+    //    who could set their own preferred_username to "admin" at the IdP could
+    //    take the Bindarr owner account by signing in once.
     if (!user) {
       const existingUser = await db.get(`SELECT * FROM users WHERE username = ?`, [username]);
+      // Linking off and the name is taken: say so, rather than falling through to
+      // auto-provisioning, which would quietly hand them a brand new "<name>-1"
+      // account with an empty collection and leave them convinced the upgrade ate
+      // their cards.
+      if (existingUser && !oidc.isUsernameLinkEnabled()) {
+        console.warn(`OIDC: "${username}" already exists locally and OIDC_ALLOW_USERNAME_LINK is off — not linking.`);
+        return frontendRedirect({
+          oidc_error: 'A Bindarr account with this username already exists. An administrator must set OIDC_ALLOW_USERNAME_LINK=true to attach single sign-on to it.'
+        });
+      }
       if (existingUser) {
+        // An account already bound to a DIFFERENT IdP identity is never re-bound.
+        // Two subjects claiming one username is the collision this whole flag is
+        // about, and silently moving the account to whoever logged in last is the
+        // worst of the available answers.
+        if (existingUser.oidc_sub && existingUser.oidc_sub !== sub) {
+          console.warn(`OIDC: refusing to relink "${username}" — already bound to another identity.`);
+          return frontendRedirect({
+            oidc_error: 'That username is already linked to a different single sign-on identity. Ask an administrator.'
+          });
+        }
         await db.run(`UPDATE users SET oidc_sub = ? WHERE id = ?`, [sub, existingUser.id]);
+        console.log(`OIDC: linked identity to existing account "${username}" (OIDC_ALLOW_USERNAME_LINK).`);
         user = await db.get(`SELECT * FROM users WHERE id = ?`, [existingUser.id]);
       }
     }

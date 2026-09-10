@@ -132,6 +132,7 @@ All optional.
 | `OIDC_PROVIDER_NAME` | `Single Sign-On` | Display name shown on the login button (e.g. `Authelia`, `Authentik`, `Keycloak`). |
 | `OIDC_USER_CLAIM` | `preferred_username` | Identity claim to map to the Bindarr username. |
 | `OIDC_AUTO_PROVISION` | `true` | Automatically create a Bindarr member account on first successful SSO login. |
+| `OIDC_ALLOW_USERNAME_LINK` | `false` | Let an SSO identity attach itself to an **existing** Bindarr account that has the same username. Needed to move accounts created before SSO onto it. **Only turn this on if your users cannot choose their own username at the identity provider** — if they can, someone setting theirs to `admin` takes the owner account on their first login. With it off, an SSO login whose username is already taken is refused rather than silently given a second, empty account. |
 | `OIDC_TOKEN_ENDPOINT_AUTH_METHOD` | `client_secret_basic` | Token endpoint client authentication method. Set to client_secret_basic or client_secret_post. |
 | `TRUST_PROXY` | — | Number of proxy hops (usually `1`) when a reverse proxy terminates TLS, so rate limiting sees the real client IP. |
 | `CV_MODEL_DIR` | `/app/database/models` in the image | Where the scan models and catalogs live. Must be on persistent storage, or an image update discards every catalog you built. |

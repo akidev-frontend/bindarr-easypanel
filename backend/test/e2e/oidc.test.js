@@ -6,6 +6,7 @@ const assert = require('assert');
 const { spawn } = require('child_process');
 
 const tmpDb = path.join(os.tmpdir(), `bindarr-oidc-test-${process.pid}.db`);
+const linkDb = path.join(os.tmpdir(), `bindarr-oidc-link-${process.pid}.db`);
 const projectRoot = path.join(__dirname, '../../../');
 
 async function waitForServer(url) {
@@ -185,6 +186,51 @@ async function runTests() {
     assert(badRedirect.includes('oidc_error='), 'invalid state must redirect with oidc_error');
     console.log('PASS: F7-TC7');
 
+    // F7-TC8: a NEW identity claiming an EXISTING account's username is refused.
+    //
+    // This is the account-takeover path. The owner account is always called
+    // "admin", extractUserIdentity lower-cases whatever the IdP sends, and on any
+    // IdP where a person can pick their own preferred_username, picking "admin"
+    // used to bind their identity to the owner account and log them in as it --
+    // no password anywhere in the flow. OIDC_ALLOW_USERNAME_LINK is unset here,
+    // which is the default, so it must be refused and the owner left alone.
+    mockUserClaims = {
+      sub: 'idp-sub-attacker',
+      preferred_username: 'admin',
+      email: 'attacker@example.invalid'
+    };
+    const loginRes4 = await fetch(`${base}/api/auth/oidc/login`, { redirect: 'manual' });
+    const state4 = new URL(loginRes4.headers.get('location')).searchParams.get('state');
+    const callbackRes4 = await fetch(`${base}/api/auth/oidc/callback?code=valid-auth-code-4&state=${encodeURIComponent(state4)}`, {
+      redirect: 'manual'
+    });
+    const takeoverRedirect = new URL(callbackRes4.headers.get('location'), base);
+    assert.strictEqual(takeoverRedirect.searchParams.get('oidc_token'), null,
+      'a username collision must not issue a session for the existing account');
+    assert(takeoverRedirect.searchParams.get('oidc_error'),
+      'a username collision must come back as an error');
+
+    // And the owner is untouched: its oidc_sub is still the identity that
+    // bootstrapped it, so the original owner can still sign in.
+    mockUserClaims = {
+      sub: 'idp-sub-777',
+      preferred_username: 'admin',
+      email: 'owner@pallet.org'
+    };
+    const loginRes5 = await fetch(`${base}/api/auth/oidc/login`, { redirect: 'manual' });
+    const state5 = new URL(loginRes5.headers.get('location')).searchParams.get('state');
+    const callbackRes5 = await fetch(`${base}/api/auth/oidc/callback?code=valid-auth-code-5&state=${encodeURIComponent(state5)}`, {
+      redirect: 'manual'
+    });
+    const ownerToken = new URL(callbackRes5.headers.get('location'), base).searchParams.get('oidc_token');
+    assert(ownerToken, 'the identity that bootstrapped the owner must still log in');
+    const ownerMe = await (await fetch(`${base}/api/auth/me`, {
+      headers: { 'Authorization': `Bearer ${ownerToken}` }
+    })).json();
+    assert.strictEqual(ownerMe.user.id, meData.user.id, 'must still be the same owner account');
+    assert.strictEqual(ownerMe.user.oidc_sub, 'idp-sub-777', 'the attacker must not have re-bound the owner');
+    console.log('PASS: F7-TC8');
+
   } finally {
     server.kill('SIGKILL');
     if (typeof idpServer.closeAllConnections === 'function') {
@@ -197,7 +243,140 @@ async function runTests() {
   }
 }
 
+// The other half of OIDC_ALLOW_USERNAME_LINK: with it ON, linking has to actually
+// work, because that is the only way an install that predates SSO gets its
+// existing accounts -- and their collections -- onto it. Its own server and its
+// own database, because it needs a local 'admin' account created the ordinary way
+// (password and all) rather than one bootstrapped by OIDC.
+async function runUsernameLinkTests() {
+  let mockUserClaims = {
+    sub: 'idp-sub-link',
+    preferred_username: 'admin',
+    email: 'owner@pallet.org'
+  };
+
+  const idpServer = http.createServer((req, res) => {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    if (url.pathname === '/.well-known/openid-configuration') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        issuer: `http://${req.headers.host}`,
+        authorization_endpoint: `http://${req.headers.host}/authorize`,
+        token_endpoint: `http://${req.headers.host}/token`,
+        userinfo_endpoint: `http://${req.headers.host}/userinfo`
+      }));
+      return;
+    }
+    if (url.pathname === '/token' && req.method === 'POST') {
+      req.on('data', () => {});
+      req.on('end', () => {
+        const payloadB64 = Buffer.from(JSON.stringify(mockUserClaims)).toString('base64url');
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          access_token: 'mock-access-token',
+          token_type: 'Bearer',
+          id_token: `eyJhbGciOiJub25lIn0.${payloadB64}.sig`,
+          expires_in: 3600
+        }));
+      });
+      return;
+    }
+    if (url.pathname === '/userinfo') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(mockUserClaims));
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+
+  await new Promise(resolve => idpServer.listen(0, '127.0.0.1', resolve));
+  const idpIssuer = `http://127.0.0.1:${idpServer.address().port}`;
+
+  const port = '3020';
+  const base = `http://localhost:${port}`;
+  const server = spawn('node', [path.join(projectRoot, 'backend/src/server.js')], {
+    env: {
+      ...process.env,
+      // A pre-existing local account, exactly like an install upgrading into SSO.
+      DEFAULT_ADMIN_PASSWORD: 'test-admin-password',
+      PORT: port,
+      DB_PATH: linkDb,
+      HTTPS_PORT: '',
+      OIDC_ENABLED: 'true',
+      OIDC_PROVIDER_NAME: 'TestIdP',
+      OIDC_ISSUER_URL: idpIssuer,
+      OIDC_CLIENT_ID: 'bindarr-test-id',
+      OIDC_CLIENT_SECRET: 'bindarr-test-secret',
+      OIDC_AUTO_PROVISION: 'true',
+      OIDC_ALLOW_USERNAME_LINK: 'true'
+    }
+  });
+
+  const callback = async (code) => {
+    const loginRes = await fetch(`${base}/api/auth/oidc/login`, { redirect: 'manual' });
+    const state = new URL(loginRes.headers.get('location')).searchParams.get('state');
+    const res = await fetch(`${base}/api/auth/oidc/callback?code=${code}&state=${encodeURIComponent(state)}`, {
+      redirect: 'manual'
+    });
+    return new URL(res.headers.get('location'), base).searchParams;
+  };
+
+  try {
+    await waitForServer(`${base}/api/health`);
+
+    // F7-TC9: with the flag on, the IdP identity attaches to the existing local
+    // account rather than creating a second, empty one beside it.
+    const linked = await callback('link-code-1');
+    const linkToken = linked.get('oidc_token');
+    assert(linkToken, 'OIDC_ALLOW_USERNAME_LINK=true must let the identity link and log in');
+    const linkedMe = await (await fetch(`${base}/api/auth/me`, {
+      headers: { 'Authorization': `Bearer ${linkToken}` }
+    })).json();
+    assert.strictEqual(linkedMe.user.username, 'admin', 'must be the existing account, not a new one');
+    assert.strictEqual(linkedMe.user.oidc_sub, 'idp-sub-link');
+    console.log('PASS: F7-TC9');
+
+    // F7-TC10: a SECOND identity claiming the same username is still refused,
+    // even with linking on -- the account is already bound, and handing it to
+    // whoever logged in last is the takeover with an extra step.
+    mockUserClaims = {
+      sub: 'idp-sub-someone-else',
+      preferred_username: 'admin',
+      email: 'someone@example.invalid'
+    };
+    const second = await callback('link-code-2');
+    assert.strictEqual(second.get('oidc_token'), null,
+      'an account already bound to another identity must not be re-bound');
+    assert(second.get('oidc_error'), 'the refusal must come back as an error');
+
+    // The first identity still owns it.
+    mockUserClaims = {
+      sub: 'idp-sub-link',
+      preferred_username: 'admin',
+      email: 'owner@pallet.org'
+    };
+    const again = await callback('link-code-3');
+    const againMe = await (await fetch(`${base}/api/auth/me`, {
+      headers: { 'Authorization': `Bearer ${again.get('oidc_token')}` }
+    })).json();
+    assert.strictEqual(againMe.user.oidc_sub, 'idp-sub-link');
+    console.log('PASS: F7-TC10');
+
+  } finally {
+    server.kill('SIGKILL');
+    if (typeof idpServer.closeAllConnections === 'function') {
+      idpServer.closeAllConnections();
+    }
+    await new Promise(resolve => idpServer.close(resolve));
+    for (const suffix of ['', '-wal', '-shm']) {
+      try { fs.unlinkSync(linkDb + suffix); } catch { /* ignore */ }
+    }
+  }
+}
+
 runTests()
+  .then(runUsernameLinkTests)
   .then(() => setTimeout(() => process.exit(0), 500))
   .catch(err => {
     console.error('FAIL: oidc.test.js -', err.message);

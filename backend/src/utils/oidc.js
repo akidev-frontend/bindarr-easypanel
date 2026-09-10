@@ -22,6 +22,26 @@ function isAutoProvisionEnabled() {
   return true;
 }
 
+// Whether an IdP identity may attach itself to a Bindarr account that already
+// exists, purely because the two share a username.
+//
+// Off unless the operator turns it on, and that is the whole point. The username
+// comes from a claim the IdP sends (OIDC_USER_CLAIM, preferred_username by
+// default) and extractUserIdentity lower-cases it, while the Bindarr owner
+// account is always created as "admin". So on any IdP where a person can choose
+// or edit their own username — self-registration, or a profile page that lets
+// them — setting it to "admin" and signing in once used to bind their identity
+// to the owner account and log them straight in as it. No password involved.
+//
+// It cannot simply be deleted: an install that predates SSO has real accounts
+// with real collections behind them, and linking by username is how those
+// accounts keep working. So it stays available, and the operator says whether
+// their IdP's usernames are trustworthy enough for it — which is a fact only
+// they have.
+function isUsernameLinkEnabled() {
+  return process.env.OIDC_ALLOW_USERNAME_LINK === 'true' || process.env.OIDC_ALLOW_USERNAME_LINK === '1';
+}
+
 function getDefaultRole() {
   return process.env.OIDC_DEFAULT_ROLE === 'admin' ? 'admin' : 'member';
 }
@@ -356,6 +376,7 @@ module.exports = {
   isAutoProvisionEnabled,
   getDefaultRole,
   getUserClaimName,
+  isUsernameLinkEnabled,
   getTokenEndpointAuthMethod,
   getDiscovery,
   generatePkce,
