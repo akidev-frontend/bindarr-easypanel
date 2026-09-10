@@ -312,17 +312,53 @@ async function pricesAndQuota() {
   await db.run("INSERT INTO decks (name, user_id) VALUES ('Fixture deck', 1)");
   const deck = await db.get("SELECT id FROM decks WHERE name = 'Fixture deck'");
   await db.run('INSERT INTO deck_cards (deck_id, card_id, quantity) VALUES (?, ?, 1)', [deck.id, 'pokemontcgapi-bs-4']);
-  respond = config => { assert.strictEqual(config.params.q, 'id:"bs-4"'); return envelope([raw]); };
+  // bs-4 was priced moments ago by creditDiscipline, so it is fresh. Two more owned
+  // cards are not: bs-2 carries a price that has aged past PRICE_AGE_DAYS, and bs-3
+  // is a listing row that entered the collection without ever being priced (the
+  // quota was exhausted when it was added, say). A sweep pays for those two only.
+  const owned = api.normalizeCard(card('bs-2'));
+  await api.cacheCards([owned, { ...api.normalizeCard(card('bs-3')), price_trend: null }]);
+  await db.run("UPDATE card_cache SET last_updated = datetime('now', '-4 days') WHERE id = 'pokemontcgapi-bs-2'");
+  await db.run("INSERT INTO collection (user_id, card_id) VALUES (1, 'pokemontcgapi-bs-2'), (1, 'pokemontcgapi-bs-3')");
+  const asked = config => config.params.q.match(/id:"([^"]+)"/g).map(m => m.slice(4, -1)).sort();
+  const sweptAt = async () => (await db.get('SELECT pokemontcgapi_prices_swept_at AS at FROM app_settings WHERE id = 1')).at;
+  assert.strictEqual(await sweptAt(), null, 'no sweep has run yet');
+  respond = config => {
+    assert.deepStrictEqual(asked(config), ['bs-2', 'bs-3'], 'a sweep asks only about owned cards whose price is stale or missing');
+    return envelope([card('bs-2'), card('bs-3')]);
+  };
+  await api.updateCollectionPrices();
+  assert.strictEqual(calls.length, 1, 'one batched request for the two stale cards');
+  assert.ok(await sweptAt(), 'the sweep records when it ran');
+  assert.strictEqual((await db.get("SELECT price_trend FROM card_cache WHERE id = 'pokemontcgapi-bs-3'")).price_trend, 599.9);
+  assert.strictEqual((await db.get("SELECT price FROM price_history WHERE card_id = 'pokemontcgapi-bs-2'")).price, 599.9);
+  await api.updateCollectionPrices();
+  assert.strictEqual(calls.length, 1, 'a sweep that just ran is not due again');
+  // The admin's cadence (#59) is the gate, and the sweep never overrides it: a card
+  // going stale between two due dates waits for the next one.
+  await db.run("UPDATE card_cache SET last_updated = datetime('now', '-4 days') WHERE id = 'pokemontcgapi-bs-2'");
+  await api.updateCollectionPrices();
+  assert.strictEqual(calls.length, 1, 'stale cards wait for the configured refresh interval');
+  await db.run("UPDATE app_settings SET pokemontcgapi_prices_swept_at = datetime('now', '-2 days'), price_refresh_days = 30");
+  await api.updateCollectionPrices();
+  assert.strictEqual(calls.length, 1, 'every 30 days means every 30 days');
+  await db.run('UPDATE app_settings SET price_refresh_days = 0');
+  await api.updateCollectionPrices();
+  assert.strictEqual(calls.length, 1, 'Never in Admin > Instance Settings stops the automatic sweep');
+  await db.run('UPDATE app_settings SET price_refresh_days = 1');
+  await clear();
+  respond = config => {
+    assert.deepStrictEqual(asked(config), ['bs-2'], 'a due sweep still skips the cards refreshed within PRICE_AGE_DAYS');
+    return envelope([card('bs-2')]);
+  };
+  await api.updateCollectionPrices();
+  assert.strictEqual(calls.length, 1, 'due and stale: exactly one request');
+  // Due with nothing stale costs no request, and still counts as having run.
+  await db.run("UPDATE app_settings SET pokemontcgapi_prices_swept_at = '2026-01-01 00:00:00'");
+  respond = () => { throw new Error('nothing is stale, so nothing may be fetched'); };
   await api.updateCollectionPrices();
   assert.strictEqual(calls.length, 1);
-  await api.updateCollectionPrices();
-  assert.strictEqual(calls.length, 1, 'daily sweep gate survives subsequent calls');
-  // Expire the response cache so a forced sweep has to go to the network: the
-  // point is the gate, not the cache, and a fresh cache would hide the difference.
-  await db.run('UPDATE pokemontcgapi_cache SET fetched_at = 0');
-  await api.updateCollectionPrices(true);
-  assert.strictEqual(calls.length, 2, 'the daily interval forces past the gate like the other providers');
-  assert.strictEqual((await db.get("SELECT price FROM price_history WHERE card_id = 'pokemontcgapi-bs-4'")).price, 599.9);
+  assert.notStrictEqual(await sweptAt(), '2026-01-01 00:00:00', 'an empty sweep is recorded so the hourly tick does not re-check until the next interval');
   await clear();
   respond = () => { const error = new Error('quota'); error.response = { status: 429, headers: { 'retry-after': '3600' } }; throw error; };
   await assert.rejects(api.searchCards({ name: 'quota-one', scope: 'internet' }), { message: 'UPSTREAM_UNAVAILABLE' });
@@ -356,9 +392,15 @@ async function creditDiscipline() {
   assert.strictEqual(calls.length, 2, 'one listing page plus one detail fetch');
   assert.strictEqual((await db.get("SELECT price_trend FROM card_cache WHERE id = 'pokemontcgapi-bs-4'")).price_trend, 599.9);
   await clear();
+  // The price's age is what the sweep selects on, so a listing may not refresh it
+  // either: a browsed card's old price would otherwise look current forever.
+  await db.run("UPDATE card_cache SET last_updated = '2026-01-01 00:00:00' WHERE id = 'pokemontcgapi-bs-4'");
   respond = () => envelope([listed]);
   await api.searchCards({ name: 'Charizard', scope: 'internet' });
-  assert.strictEqual((await db.get("SELECT price_trend FROM card_cache WHERE id = 'pokemontcgapi-bs-4'")).price_trend, 599.9, 'a later listing never erases a fetched price');
+  const kept = await db.get("SELECT price_trend, last_updated FROM card_cache WHERE id = 'pokemontcgapi-bs-4'");
+  assert.strictEqual(kept.price_trend, 599.9, 'a later listing never erases a fetched price');
+  assert.strictEqual(kept.last_updated, '2026-01-01 00:00:00', 'a later listing never makes a stored price look fresher than it is');
+  await db.run("UPDATE card_cache SET last_updated = CURRENT_TIMESTAMP WHERE id = 'pokemontcgapi-bs-4'");
   respond = () => { throw new Error('a priced, fresh row must not be fetched again'); };
   await cardApi.hydrate('pokemontcgapi-bs-4');
   assert.strictEqual((await api.getCardById('pokemontcgapi-bs-4')).price_trend, 599.9);
@@ -376,6 +418,8 @@ async function creditDiscipline() {
   await searches();
   await cacheAndErrors();
   await routes();
+  // creditDiscipline before pricesAndQuota: the latter ends by provoking a 429,
+  // which pauses every upstream request for the Retry-After it announces.
   await creditDiscipline();
   await pricesAndQuota();
   console.log('pokemontcgapi.test.js: all assertions passed');

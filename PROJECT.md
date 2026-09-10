@@ -171,7 +171,11 @@ them), so listing rows are cached unpriced (`price_trend` null, which
 any price already stored onto the incoming row so a listing never erases one.
 The price arrives at the two moments the app shows a value: `hydrateCard`, called
 by `cardApi.hydrate` when a card enters the collection, fetches that one card
-with prices (2 credits); and the daily sweep prices owned/decked cards in batches.
+with prices (2 credits); and the automatic sweep prices owned/decked cards in
+batches, only those whose stored price has aged past three days, as often as
+`app_settings.price_refresh_days` allows (`shouldSweepPrices` is the single gate;
+the timer in server.js is unforced). `cacheListedCards` also puts a kept row's
+`last_updated` back, so a listing cannot make an old price look fresh to the sweep.
 User-entered names are quoted as literal query phrases; set IDs go through the
 separate `set` parameter.
 
@@ -189,8 +193,8 @@ Price normalization chooses ungraded Cardmarket EUR, then TCGplayer USD, and
 keeps every printing/average column in that source and currency. It ignores slab
 quotes and known different locales; `index_eur` is a composite, so it is not
 presented as a Cardmarket price. Missing quotes stay absent. Source labels are
-`pokemontcgapi-cardmarket` and `pokemontcgapi-tcgplayer`. Its own daily sweep reads
-only owned/decked IDs in batches of 25, with a separate timestamp, and only while
+`pokemontcgapi-cardmarket` and `pokemontcgapi-tcgplayer`. Its own sweep reads only
+stale owned/decked IDs in batches of 25, with a separate timestamp, and only while
 selected. The older pokemontcg.io and TCGCSV sweeps skip these IDs/sets.
 
 Set browsing, `cardSets` downloads and catalog coverage use the selected client.

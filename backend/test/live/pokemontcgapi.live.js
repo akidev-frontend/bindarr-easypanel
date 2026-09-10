@@ -114,15 +114,21 @@ async function main() {
     assert.ok(one && (one.id === c.id || one.card?.id === c.id || one.name), 'printing lookup failed');
     log(`card by id ${c.id}: OK`);
 
-    // 8. Add to collection and run the price sweep (forced), then read history.
+    // 8. Add to collection, then run the price sweep the way the hourly timer does:
+    //    unforced, so shouldSweepPrices decides, and only over cards whose stored
+    //    price has aged out. The card was just priced on add, so its price is aged
+    //    by hand first; a fresh DB has never swept, so the sweep is due.
     const add = await fetch(`${base}/api/collection`, { method: 'POST', headers: H, body: JSON.stringify({ card_id: c.id, quantity: 1 }) });
     assert.ok(add.status < 300, `add to collection ${add.status} ${await add.text()}`);
     const owned = await db.get(`SELECT price_trend, price_currency, price_source FROM card_cache WHERE id = ?`, [c.id]);
     assert.ok(owned && owned.price_trend > 0, `the card entering the collection must be priced, got ${JSON.stringify(owned)}`);
     log(`owned card priced on add: ${owned.price_trend} ${owned.price_currency} from ${owned.price_source} (listing rows stay unpriced by design): OK`);
-    await require('../../src/pokemontcgapi').updateCollectionPrices(true);
+    await db.run(`UPDATE card_cache SET last_updated = datetime('now', '-4 days') WHERE id = ?`, [c.id]);
+    await require('../../src/pokemontcgapi').updateCollectionPrices();
     const hist = await db.all(`SELECT price FROM price_history WHERE card_id = ?`, [c.id]);
-    log(`forced daily sweep ran over owned cards, price_history rows=${hist.length}: OK`);
+    const swept = await db.get(`SELECT pokemontcgapi_prices_swept_at AS at FROM app_settings WHERE id = 1`);
+    assert.ok(swept && swept.at, 'the sweep must record that it ran');
+    log(`unforced sweep ran over stale owned cards (gate: shouldSweepPrices), price_history rows=${hist.length}: OK`);
 
     // 9. Nothing leaked into the other providers' id spaces.
     const foreign = await db.get(`SELECT COUNT(*) n FROM card_cache WHERE game='pokemon' AND id NOT LIKE 'pokemontcgapi-%'`);

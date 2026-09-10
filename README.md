@@ -170,7 +170,7 @@ still use TCGdex, and upgrades keep the provider already configured.
 | Provider | Printings served | Key |
 | --- | --- | --- |
 | TCGdex | All existing Pokémon language choices, subject to its catalogue coverage | None |
-| pokemontcg.io | English; other languages use TCGdex | Optional `POKEMON_TCG_API_KEY` |
+| pokemontcg.io (deprecated) | English; other languages use TCGdex | Optional `POKEMON_TCG_API_KEY`. Registrations are closed and keys stop working on 1 March 2027; an install still on it gets a warning in the server log at every boot |
 | pokemontcgapi.com (optional) | English, Japanese and Simplified Chinese; other languages use TCGdex | Required `POKEMONTCGAPI_KEY` |
 
 To enable pokemontcgapi.com, set `POKEMONTCGAPI_KEY` in the **backend server's**
@@ -201,9 +201,12 @@ The API meters credits, and prices are what cost them: a 250-card page is one
 credit without prices and about forty with them (measured 10 Sep 2026). So
 browsing and searching fetch names and artwork only, and a card is priced at the
 two moments the app shows a value: when it enters your collection (two credits for
-that card) and in the daily refresh of owned or decked cards (batched, about one
-credit per six cards). Search results therefore show no price until a card is
-added. A full catalogue build of a language costs roughly one credit per 250
+that card) and in the automatic refresh of owned or decked cards (batched, about
+one credit per six cards). That refresh only asks about cards whose stored price
+is older than three days, and it runs as often as **Admin → Instance Settings →
+Refresh prices** says: daily by default, down to every 30 days or never (see
+[How often prices refresh](#how-often-prices-refresh)). Search results therefore
+show no price until a card is added. A full catalogue build of a language costs roughly one credit per 250
 cards (Japanese, the largest release line, is under 100 credits), so check the
 account's quota before building a whole language. An outage serves matching
 cached cards or reports an error; it does not silently switch ID namespaces.

@@ -18,11 +18,15 @@ const DAY = 24 * 60 * 60 * 1000;
 // 10 Sep 2026: limit 5 with prices cost 4 credits, 50 cost 8, 250 cost 40; every
 // size without prices cost 1). So browsing and searching ask for images and names
 // only, and prices are fetched per card at the two moments the app shows a value:
-// when a card enters the collection (hydrateCard) and in the daily sweep over
-// owned cards. On the 800-credit trial that is the difference between twenty
-// searches and eight hundred.
+// when a card enters the collection (hydrateCard) and in the automatic sweep over
+// owned cards (updateCollectionPrices). On the 800-credit trial that is the
+// difference between twenty searches and eight hundred.
 const LIST_INCLUDE = 'images,translations';
 const CARD_INCLUDE = 'images,prices,translations';
+// How long a fetched price is current. getCardById and the sweep both read it, and
+// the sweep selects on it in SQL, so it is one number: two that disagreed would
+// have the sweep pick cards getCardById then refuses to refresh.
+const PRICE_AGE_DAYS = 3;
 const REGIONS = { en: 'WEST', ja: 'JP', 'zh-cn': 'CN' };
 const client = axios.create({
   baseURL: BASE, timeout: 15000, maxRedirects: 0,
@@ -170,8 +174,11 @@ function normalizeCard(card) {
 const cacheCards = cards => cacheNormalizedCards(cards, 'pokemon');
 
 // Listing rows carry no prices. A price already in card_cache came from a detail
-// fetch or the daily sweep and cost credits; the upsert would reset it to null, so
-// the stored price columns are copied onto the incoming row first.
+// fetch or the sweep and cost credits; the upsert would reset it to null, so the
+// stored price columns are copied onto the incoming row first. Its last_updated is
+// put back too: that timestamp is how the sweep tells a stale price from a fresh
+// one, and a listing that bumped it would make a browsed card's ten-day-old price
+// look refreshed, so the sweep would never ask about the cards the user looks at.
 const PRICE_COLUMNS = ['price_trend', 'price_normal', 'price_holofoil', 'price_reverse_holofoil',
   'price_avg1', 'price_avg7', 'price_avg30', 'price_currency', 'price_source'];
 async function cacheListedCards(cards) {
@@ -179,11 +186,14 @@ async function cacheListedCards(cards) {
   const kept = new Map();
   for (let i = 0; i < cards.length; i += 200) {
     const ids = cards.slice(i, i + 200).map(c => c.id);
-    const rows = await db.all(`SELECT id, ${PRICE_COLUMNS.join(', ')} FROM card_cache
+    const rows = await db.all(`SELECT id, last_updated, ${PRICE_COLUMNS.join(', ')} FROM card_cache
       WHERE price_trend IS NOT NULL AND id IN (${ids.map(() => '?').join(', ')})`, ids);
     for (const row of rows) kept.set(row.id, row);
   }
   await cacheCards(cards.map(c => (kept.has(c.id) ? { ...c, ...kept.get(c.id) } : c)));
+  for (const [id, row] of kept) {
+    if (row.last_updated) await db.run('UPDATE card_cache SET last_updated = ? WHERE id = ?', [row.last_updated, id]);
+  }
 }
 
 // Called when a card enters the collection: the one moment a browsed card needs a
@@ -296,7 +306,7 @@ async function getCardById(id, { refresh = false } = {}) {
   // A fresh row still counts as stale when it never had prices: it came from a
   // listing page, and the inspector asking for this one card is what a detail
   // fetch is for.
-  if (!refresh && cached && cached.price_trend != null && Date.now() - parseSqliteUtc(cached.last_updated).getTime() < 3 * DAY) return parseCardRow(cached);
+  if (!refresh && cached && cached.price_trend != null && Date.now() - parseSqliteUtc(cached.last_updated).getTime() < PRICE_AGE_DAYS * DAY) return parseCardRow(cached);
   try {
     const raw = await request(`/cards/${encodeURIComponent(providerId(id))}`, { include: CARD_INCLUDE });
     const card = normalizeCard(raw);
@@ -309,16 +319,31 @@ async function getCardById(id, { refresh = false } = {}) {
   }
 }
 
-// `force` mirrors the other providers: the daily interval passes true because
-// the interval itself is the cadence, while the startup catch-up leaves it false
-// so a restart does not re-sweep prices that cannot have changed.
-async function updateCollectionPrices(force = false) {
+// The automatic price sweep. Two gates, neither of them this module's to override:
+//
+// shouldSweepPrices is the admin's cadence (Admin → Instance Settings → Refresh
+// prices, app_settings.price_refresh_days; 0 switches automatic refreshes off).
+// server.js ticks hourly and unforced, so this is consulted on every tick and is
+// the only thing deciding whether a sweep is due. There is no `force` parameter:
+// the one this used to take let the timer skip the gate, which on a metered
+// provider is a bill the admin cannot turn down.
+//
+// Then, within a due sweep, only cards whose stored price is actually stale are
+// asked about: never priced (a listing row that entered the collection while the
+// quota was exhausted), or older than PRICE_AGE_DAYS. A card refreshed yesterday
+// costs nothing today. Owned and decked cards only; a browsed card is never paid for.
+async function updateCollectionPrices() {
   const provider = require('./utils/pokemonProvider');
   if (!hasKey() || await provider.configured() !== provider.POKEMONTCGAPI) return;
-  if (!force && !await shouldSweepPrices('pokemontcgapi')) return;
+  if (!await shouldSweepPrices('pokemontcgapi')) return;
   try {
     const owned = await db.all(`SELECT id FROM card_cache WHERE id LIKE 'pokemontcgapi-%'
-      AND id IN (SELECT card_id FROM collection UNION SELECT card_id FROM deck_cards)`);
+      AND id IN (SELECT card_id FROM collection UNION SELECT card_id FROM deck_cards)
+      AND (price_trend IS NULL OR last_updated IS NULL OR last_updated <= datetime('now', '-${PRICE_AGE_DAYS} days'))`);
+    if (!owned.length) {
+      await markPricesSwept('pokemontcgapi');
+      return;
+    }
     // Bounded OR groups stay under the query complexity limit. No per-card
     // detail requests and no whole-set sweep just to refresh one owned card.
     for (let i = 0; i < owned.length; i += 25) {

@@ -7,7 +7,7 @@ release also carries fuller notes on its
 ## [Unreleased]
 
 ### Added
-- **Optional pokemontcgapi.com Pokémon provider.** Admins can select it after configuring `POKEMONTCGAPI_KEY` on the server. Adds English, Japanese and Simplified Chinese set/card browsing, search, artwork and scan-catalog caching, with Cardmarket EUR prices where available and TCGplayer USD fallback. Uses cursor pagination, persistent ETag caching and batched daily refreshes for owned/decked cards. Listings are fetched without prices (one credit per 250-card page); a card is priced when it enters the collection and in the daily refresh, so search results show a price only for cards you own. Missing prices stay absent. Existing defaults, collection IDs and other providers' language support are preserved; TCGCSV does not overwrite the new provider's quotes.
+- **Optional pokemontcgapi.com Pokémon provider.** Admins can select it after configuring `POKEMONTCGAPI_KEY` on the server. Adds English, Japanese and Simplified Chinese set/card browsing, search, artwork and scan-catalog caching, with Cardmarket EUR prices where available and TCGplayer USD fallback. Uses cursor pagination, persistent ETag caching and batched automatic refreshes for owned/decked cards, on the interval set under Admin → Instance Settings → Refresh prices and only for cards whose stored price has aged out. Listings are fetched without prices (one credit per 250-card page); a card is priced when it enters the collection and in that refresh, so search results show a price only for cards you own. Missing prices stay absent. Existing defaults, collection IDs and other providers' language support are preserved; TCGCSV does not overwrite the new provider's quotes.
 
 ## [1.8.4] - 2026-08-22
 
