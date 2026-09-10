@@ -61,7 +61,7 @@ router.get('/version', async (req, res) => {
 
 async function getEffectiveSettings() {
   const row = await db.get(`
-    SELECT public_base_url, pokemon_provider,
+    SELECT public_base_url, pokemon_provider, price_refresh_days,
            scan_exclude_tokens, scan_exclude_art_cards, scan_exclude_jumpstart, scan_exclude_promos,
            scan_exclude_digital, setup_complete
     FROM app_settings WHERE id = 1
@@ -76,9 +76,14 @@ async function getEffectiveSettings() {
   // read as excluded rather than as included — see the column comment in db.js.
   const scan_exclude_digital = row ? !!row.scan_exclude_digital : true;
   const setup_complete = !!(row && row.setup_complete);
+  // Daily unless an admin says otherwise, matching what every install did before
+  // the column existed. 0 means automatic refreshes are off.
+  const n = Number(row && row.price_refresh_days);
+  const price_refresh_days = Number.isInteger(n) && n >= 0 ? n : 1;
   return {
     public_base_url,
     pokemon_provider,
+    price_refresh_days,
     scan_exclude_tokens,
     scan_exclude_art_cards,
     scan_exclude_jumpstart,
@@ -103,6 +108,7 @@ router.put('/', requireAdmin, async (req, res) => {
   const {
     public_base_url,
     pokemon_provider,
+    price_refresh_days,
     scan_exclude_tokens,
     scan_exclude_art_cards,
     scan_exclude_jumpstart,
@@ -134,6 +140,16 @@ router.put('/', requireAdmin, async (req, res) => {
         }
       })();
     }
+  }
+  if (price_refresh_days !== undefined) {
+    // Rejected rather than clamped: a typo that silently becomes 365 is a
+    // collection whose prices quietly stop moving, which looks like the app
+    // being broken and not like a setting being wrong.
+    const n = Number(price_refresh_days);
+    if (!Number.isInteger(n) || n < 0 || n > 30) {
+      return res.status(400).json({ error: 'Price refresh interval must be a whole number of days from 0 (off) to 30.' });
+    }
+    await db.run(`UPDATE app_settings SET price_refresh_days = ? WHERE id = 1`, [n]);
   }
   if (scan_exclude_tokens !== undefined) {
     await db.run(`UPDATE app_settings SET scan_exclude_tokens = ? WHERE id = 1`, [scan_exclude_tokens ? 1 : 0]);

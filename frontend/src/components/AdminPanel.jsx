@@ -35,6 +35,7 @@ function AdminPanel({ user, onUpdateUser, showToast }) {
   // Instance Settings States
   const [publicBaseUrl, setPublicBaseUrl] = useState('');
   const [pokemonProvider, setPokemonProvider] = useState('pokemontcg');
+  const [priceRefreshDays, setPriceRefreshDays] = useState(1);
   const [settingsLoading, setSettingsLoading] = useState(false);
   const mountedRef = useRef(true);
 
@@ -164,6 +165,7 @@ function AdminPanel({ user, onUpdateUser, showToast }) {
         if (!mountedRef.current) return;
         setPublicBaseUrl(data.public_base_url || '');
         setPokemonProvider(data.pokemon_provider || 'pokemontcg');
+        setPriceRefreshDays(data.price_refresh_days ?? 1);
       }
     } catch (err) {
       console.error(err);
@@ -177,13 +179,18 @@ function AdminPanel({ user, onUpdateUser, showToast }) {
       const response = await fetch('/api/settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ public_base_url: publicBaseUrl, pokemon_provider: pokemonProvider })
+        body: JSON.stringify({
+          public_base_url: publicBaseUrl,
+          pokemon_provider: pokemonProvider,
+          price_refresh_days: Number(priceRefreshDays),
+        })
       });
 
       if (response.ok) {
         const data = await response.json();
         setPublicBaseUrl(data.public_base_url || '');
         setPokemonProvider(data.pokemon_provider || 'pokemontcg');
+        setPriceRefreshDays(data.price_refresh_days ?? 1);
         showToast(t('admin.settingsUpdated'));
       } else {
         const data = await response.json();
@@ -468,6 +475,32 @@ function AdminPanel({ user, onUpdateUser, showToast }) {
               </select>
               <p style={{ margin: '0.4rem 0 0', fontSize: '0.75rem', color: 'var(--text-secondary)', lineHeight: 1.4 }}>
                 {t('admin.pokemonProviderHint')}
+              </p>
+            </div>
+            {/* How often prices are refreshed automatically.
+                Every provider here is free except one: the optional
+                pokemontcgapi.com provider charges credits per card refreshed, so
+                a daily sweep of a large collection is a recurring bill rather
+                than a recurring courtesy. Daily stays the default — that is what
+                every install did before this existed — but someone who checks
+                their collection value monthly can now say so. */}
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label htmlFor="admin-price-refresh">{t('admin.priceRefresh')}</label>
+              <select
+                id="admin-price-refresh"
+                className="select-control"
+                value={priceRefreshDays}
+                onChange={(e) => setPriceRefreshDays(Number(e.target.value))}
+                disabled={settingsLoading}
+              >
+                <option value={1}>{t('admin.priceRefreshDaily')}</option>
+                <option value={3}>{t('admin.priceRefresh3')}</option>
+                <option value={7}>{t('admin.priceRefreshWeekly')}</option>
+                <option value={30}>{t('admin.priceRefreshMonthly')}</option>
+                <option value={0}>{t('admin.priceRefreshOff')}</option>
+              </select>
+              <p style={{ margin: '0.4rem 0 0', fontSize: '0.75rem', color: 'var(--text-secondary)', lineHeight: 1.4 }}>
+                {t('admin.priceRefreshHint')}
               </p>
             </div>
             <button type="submit" className="btn btn-primary" style={{ padding: '0.6rem', fontWeight: 700, alignSelf: 'flex-start' }} disabled={settingsLoading}>

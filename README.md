@@ -222,6 +222,12 @@ Prices are stored in the currency they were quoted in and never converted — an
 
 A price only exists once something fetched it. The Pokémon price sweep covers the sets you own cards from, so browsing a set you own nothing in shows `0.00` until a card from it lands in your collection.
 
+### How often prices refresh
+
+Owned and decked cards have their prices re-fetched automatically, and only where the stored price has aged past three days — a sweep never re-asks about a card it refreshed yesterday. **Admin → Instance Settings → Refresh prices** sets how often that runs: daily (the default), every 3 days, weekly, every 30 days, or never.
+
+Daily is what the free providers publish, so leave it there unless you have a reason. Turn it down if you are on a provider that charges per card refreshed, or if you have a very large collection and only look at its value occasionally. **Never** stops automatic refreshes entirely; prices already stored stay as they are.
+
 ## API access
 
 For reading your collection from somewhere else — a finance tracker, a dashboard widget, a script — generate a key under **Settings → API Keys** and send it as a Bearer token:
