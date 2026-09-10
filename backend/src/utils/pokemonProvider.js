@@ -87,6 +87,12 @@ function sunsetNotice(provider, now = Date.now()) {
 
 // Resolve policy to a client here as well, so a third provider cannot silently
 // fall through an old two-way ternary at a search or set-sync call site.
+//
+// Every client returned here has searchCards, getCardById, fetchAndCacheSets,
+// updateCollectionPrices and listSets. pokemontcg.io's
+// listSets exists only to throw an explicit error, since that provider never had
+// a set listing in this shape and is being retired; callers that need one
+// (catalog.claimedFor, catalog.listLanguages) already route around it and catch.
 async function apiFor(lang) {
   const provider = await providerFor(lang);
   if (provider === POKEMONTCGAPI) return require('../pokemontcgapi');

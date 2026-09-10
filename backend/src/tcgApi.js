@@ -670,10 +670,25 @@ async function updateCollectionPrices(force = false) {
   }
 }
 
+// pokemontcg.io has no set listing in the shape the other two Pokémon clients
+// return (tcgdexApi.listSets, pokemontcgapi.listSets): it only ever populated the
+// `sets` table through fetchAndCacheSets. utils/pokemonProvider.apiFor hands this
+// module back whenever the configured provider is pokemontcg.io, and two of its
+// call sites (catalog.claimedFor, catalog.listLanguages) go on to call listSets;
+// both happen to route around this provider today, but the next one would have
+// got `TypeError: listSets is not a function` from the very helper meant to stop a
+// provider falling through silently. So the refusal is spelled out here, once. Not
+// implemented for real because the provider is being retired (see
+// pokemonProvider.POKEMONTCG_SUNSET) and nothing left in the app needs it.
+async function listSets() {
+  throw new Error('pokemontcg.io provider does not support set listing');
+}
+
 module.exports = {
   searchCards,
   getCardById,
   getCardsBySet,
+  listSets,
   updateCollectionPrices,
   fetchAndCacheSets,
   cacheCards,

@@ -79,6 +79,20 @@ async function routing() {
   assert.strictEqual(await policy.apiFor('en'), api);
   assert.strictEqual(await policy.apiFor('ja'), api);
   assert.strictEqual(await policy.apiFor('zh-tw'), require('../src/tcgdexApi'));
+  // The third provider must not leave the first one with a client missing a
+  // method its call sites use: pokemontcg.io has no set listing, and asking for one
+  // is an explicit refusal rather than a TypeError.
+  await db.run("UPDATE app_settings SET pokemon_provider = 'pokemontcg'");
+  const legacy = await policy.apiFor('en');
+  assert.strictEqual(legacy, require('../src/tcgApi'));
+  assert.strictEqual(typeof legacy.listSets, 'function');
+  await assert.rejects(legacy.listSets('en'), { message: 'pokemontcg.io provider does not support set listing' });
+  for (const client of [api, require('../src/tcgdexApi'), legacy]) {
+    for (const method of ['searchCards', 'getCardById', 'fetchAndCacheSets', 'updateCollectionPrices', 'listSets']) {
+      assert.strictEqual(typeof client[method], 'function', `${method} missing from a client apiFor can return`);
+    }
+  }
+  await db.run("UPDATE app_settings SET pokemon_provider = 'pokemontcgapi'");
   assert.strictEqual(cardApi.isPokemontcgapiId('pokemontcgapi-bs-4'), true);
   assert.strictEqual(await cardApi.printingInLanguage(api.normalizeCard(raw), 'Japanese'), null);
 }
