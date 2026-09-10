@@ -261,9 +261,13 @@ async function getCardById(id) {
   }
 }
 
-async function updateCollectionPrices() {
+// `force` mirrors the other providers: the daily interval passes true because
+// the interval itself is the cadence, while the startup catch-up leaves it false
+// so a restart does not re-sweep prices that cannot have changed.
+async function updateCollectionPrices(force = false) {
   const provider = require('./utils/pokemonProvider');
-  if (!hasKey() || await provider.configured() !== provider.POKEMONTCGAPI || !await shouldSweepPrices('pokemontcgapi')) return;
+  if (!hasKey() || await provider.configured() !== provider.POKEMONTCGAPI) return;
+  if (!force && !await shouldSweepPrices('pokemontcgapi')) return;
   try {
     const owned = await db.all(`SELECT id FROM card_cache WHERE id LIKE 'pokemontcgapi-%'
       AND id IN (SELECT card_id FROM collection UNION SELECT card_id FROM deck_cards)`);

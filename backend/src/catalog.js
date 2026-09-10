@@ -245,7 +245,11 @@ async function listLanguages(game = 'pokemon') {
     const name = languages.toName(l.code);
     let sets = [];
     try {
-      sets = await require('./tcgdexApi').listSets(l.code);
+      // The same policy the build follows: when pokemontcgapi.com is selected it
+      // serves Japanese and Simplified Chinese, and its catalogue is not
+      // TCGdex's, so estimating from TCGdex here would misstate the set and card
+      // totals (and the credit cost) of the build the admin is about to start.
+      sets = await (await pokemonProvider.apiFor(l.code)).listSets(l.code);
     } catch { continue; }                        // provider unreachable: say nothing
     const claimed = sets.reduce((n, s) => n + (s.total || s.printed_total || 0), 0);
     if (!claimed) continue;                      // nothing published in this language

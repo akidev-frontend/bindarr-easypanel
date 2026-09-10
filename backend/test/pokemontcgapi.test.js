@@ -303,6 +303,11 @@ async function pricesAndQuota() {
   assert.strictEqual(calls.length, 1);
   await api.updateCollectionPrices();
   assert.strictEqual(calls.length, 1, 'daily sweep gate survives subsequent calls');
+  // Expire the response cache so a forced sweep has to go to the network: the
+  // point is the gate, not the cache, and a fresh cache would hide the difference.
+  await db.run('UPDATE pokemontcgapi_cache SET fetched_at = 0');
+  await api.updateCollectionPrices(true);
+  assert.strictEqual(calls.length, 2, 'the daily interval forces past the gate like the other providers');
   assert.strictEqual((await db.get("SELECT price FROM price_history WHERE card_id = 'pokemontcgapi-bs-4'")).price, 599.9);
   await clear();
   respond = () => { const error = new Error('quota'); error.response = { status: 429, headers: { 'retry-after': '3600' } }; throw error; };
