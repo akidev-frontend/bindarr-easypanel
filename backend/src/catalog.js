@@ -122,22 +122,34 @@ async function newSetCount(game, lang = 'English') {
     // Scoped to the language, or a Spanish catalog would be measured against the
     // ENGLISH cache and report whatever English happens to be missing: measured
     // 98 for both mtg/English and mtg/Spanish while the Spanish cache held 1,205
-    // cards against English's 103,656. Invisible today only because no local MTG
-    // catalog exists to ask, which is exactly how it would have shipped.
-    const row = await db.get(
-      `SELECT COUNT(*) n FROM sets s
-        WHERE s.game = ? AND COALESCE(s.total, 0) > 0
-          AND LOWER(CASE WHEN s.id LIKE 'mtg-%' THEN SUBSTR(s.id, 5) WHEN s.id LIKE 'lorcana-%' THEN SUBSTR(s.id, 9) ELSE s.id END) NOT IN (
-            SELECT set_id FROM set_data_gaps WHERE game = s.game AND language = ?
-          )
-          AND NOT EXISTS (
-            SELECT 1 FROM card_cache c
-             WHERE c.game = s.game AND c.language = ?
-               AND (LOWER(c.set_id) = LOWER(s.id) OR LOWER(c.set_id) = LOWER(CASE WHEN s.id LIKE 'mtg-%' THEN SUBSTR(s.id, 5) WHEN s.id LIKE 'lorcana-%' THEN SUBSTR(s.id, 9) ELSE s.id END))
-          )`,
-      [game, lang, lang]
+    // cards against English's 103,656.
+    //
+    // Compared in JS, exactly like the Pokemon branch above, and for the same
+    // reason it has to be: the id namespaces differ, so the test needs LOWER() on
+    // both sides and an OR between the prefixed and the bare form. Neither side can
+    // use idx_card_cache_set_num, so as a correlated NOT EXISTS this re-scanned the
+    // WHOLE of card_cache once per set. Measured against 1,047 MTG sets and 126k
+    // cached rows: 9.6s with 50 sets uncached, 28s with 400 — on the single sqlite3
+    // connection, so every other request in the app queues behind it. That is why
+    // one Admin page load 504'd and took Users and the dashboard down with it (#49).
+    // It only ever ran once an MTG catalog was built, because list() asks for
+    // newSets only when `built` — which is why deleting the milo-mtg-local files
+    // "fixed" it. One pass over each table instead: same answer, ~80ms.
+    const cached = new Set((await db.all(
+      `SELECT DISTINCT LOWER(set_id) sid FROM card_cache WHERE game = ? AND language = ?`,
+      [game, lang]
+    )).map(r => r.sid));
+    const rows = await db.all(
+      `SELECT id FROM sets WHERE game = ? AND COALESCE(total, 0) > 0`, [game]
     );
-    return row ? row.n : null;
+    // The `sets` table prefixes ids ("mtg-fdn", "lorcana-tfc") while card_cache
+    // holds the bare code ("fdn"). Both forms are checked, which is what the OR in
+    // the old query did — dropping either one reports every set as new.
+    const bare = (id) => String(id).toLowerCase().replace(/^(?:mtg|lorcana)-/, '');
+    return rows.filter(r =>
+      !gaps.has(bare(r.id))
+      && !cached.has(String(r.id).toLowerCase())
+      && !cached.has(bare(r.id))).length;
   } catch {
     return null;
   }
@@ -561,4 +573,4 @@ function start(game, lang = 'English', opts = {}) {
 let last = null;
 const lastResult = () => last;
 
-module.exports = { list, listLanguages, setCounts, keptFromPrev, start, stop, state, lastResult, binPath, metaPath, GAMES };
+module.exports = { list, listLanguages, setCounts, newSetCount, keptFromPrev, start, stop, state, lastResult, binPath, metaPath, GAMES };
