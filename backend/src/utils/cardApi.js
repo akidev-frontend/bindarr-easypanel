@@ -5,6 +5,7 @@
 //
 //   mtg-<uuid>          Scryfall
 //   tcgdex-<lang>-<id>  TCGdex
+//   pokemontcgapi-<id>  pokemontcgapi.com
 //   <anything else>     pokemontcg.io
 //
 // NOT the same question as utils/pokemonProvider. That one decides which provider
@@ -28,6 +29,7 @@ const languages = require('./languages');
 
 const isMtgId = (id) => String(id || '').startsWith('mtg-');
 const isTcgdexId = (id) => String(id || '').startsWith('tcgdex-');
+const isPokemontcgapiId = id => String(id || '').startsWith('pokemontcgapi-');
 const isLorcanaId = (id) => String(id || '').startsWith('lorcana-');
 
 // The game an ID implies. `game` from the request wins when explicit; otherwise inferred from prefix.
@@ -53,6 +55,7 @@ async function getCardById(id, { game, tcgApiKey = '' } = {}) {
   const g = gameOf(id, game);
   if (g === 'mtg') return await scryfallApi.getCardById(id);
   if (g === 'lorcana') return await lorcastApi.getCardById(id);
+  if (isPokemontcgapiId(id)) return await require('../pokemontcgapi').getCardById(id);
   if (isTcgdexId(id)) return await tcgdexApi.getCardById(id);
   return await tcgApi.getCardById(id, tcgApiKey);
 }
@@ -79,6 +82,8 @@ async function printingInLanguage(card, language) {
     return await scryfallApi.getPrintingInLang(set, card.number, language).catch(() => null);
   }
   if (g === 'pokemon') {
+    // Regional set numbering cannot be translated by swapping a language code.
+    if (isPokemontcgapiId(card.id)) return null;
     if (isTcgdexId(card.id)) {
       const match = await tcgdexApi.getPrintingInLang(card.id, language).catch(() => null);
       if (match) return match;
@@ -123,4 +128,4 @@ async function printingInLanguage(card, language) {
   return null;
 }
 
-module.exports = { isMtgId, isTcgdexId, isLorcanaId, gameOf, hydrate, getCardById, printingInLanguage };
+module.exports = { isPokemontcgapiId, isMtgId, isTcgdexId, isLorcanaId, gameOf, hydrate, getCardById, printingInLanguage };

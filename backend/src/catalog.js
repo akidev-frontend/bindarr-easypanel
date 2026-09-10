@@ -72,9 +72,10 @@ async function claimedFor(game, lang) {
   if (game !== 'pokemon') return null;
   // Which provider owns the ids in card_cache for this language. Asking the other
   // one is exactly the mistake above.
-  if (!(await pokemonProvider.usesTcgdex(lang))) return null;
+  const selected = await pokemonProvider.providerFor(lang);
+  if (selected === pokemonProvider.POKEMONTCG) return null;
   try {
-    const sets = await require('./tcgdexApi').listSets(lang);
+    const sets = await (await pokemonProvider.apiFor(lang)).listSets(lang);
     return sets.reduce((n, s) => n + (s.total || s.printed_total || 0), 0) || null;
   } catch {
     return null;
@@ -108,7 +109,8 @@ async function newSetCount(game, lang = 'English') {
     ).catch(() => [])).map(r => String(r.set_id).toLowerCase()));
 
     if (game === 'pokemon') {
-      const provider = require('./tcgdexApi');
+      const provider = await pokemonProvider.providerFor(lang) === pokemonProvider.POKEMONTCGAPI
+        ? require('./pokemontcgapi') : require('./tcgdexApi');
       const sets = await provider.listSets(lang);
       if (!sets.length) return null;
       const cached = new Set((await db.all(

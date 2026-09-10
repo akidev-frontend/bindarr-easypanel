@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file. Each
 release also carries fuller notes on its
 [GitHub release](https://github.com/thenotoriousJeremy/bindarr/releases).
 
+## [Unreleased]
+
+### Added
+- **Optional pokemontcgapi.com Pokémon provider.** Admins can select it after configuring `POKEMONTCGAPI_KEY` on the server. Adds English, Japanese and Simplified Chinese set/card browsing, search, artwork and scan-catalog caching, with Cardmarket EUR prices where available and TCGplayer USD fallback. Uses cursor pagination, persistent ETag caching and batched daily refreshes for owned/decked cards. Missing prices stay absent. Existing defaults, collection IDs and other providers' language support are preserved; TCGCSV does not overwrite the new provider's quotes.
+
 ## [1.8.4] - 2026-08-22
 
 ### Fixed
