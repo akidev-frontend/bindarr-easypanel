@@ -411,6 +411,14 @@ async function initDb() {
   if (!appSettingsCols.some(c => c.name === 'tcgcsv_prices_swept_at')) {
     await run(`ALTER TABLE app_settings ADD COLUMN tcgcsv_prices_swept_at DATETIME`);
   }
+  // How many days between automatic price refreshes; 0 switches them off.
+  // Daily is what every install did before this column existed, so that is the
+  // default and nothing changes for anyone who never touches it. It exists for
+  // the metered provider: pokemontcgapi.com charges credits per card refreshed,
+  // and a daily sweep of a large collection is a recurring bill.
+  if (!appSettingsCols.some(c => c.name === 'price_refresh_days')) {
+    await run(`ALTER TABLE app_settings ADD COLUMN price_refresh_days INTEGER NOT NULL DEFAULT 1`);
+  }
   if (!appSettingsCols.some(c => c.name === 'lorcana_prices_swept_at')) {
     await run(`ALTER TABLE app_settings ADD COLUMN lorcana_prices_swept_at DATETIME`);
   }

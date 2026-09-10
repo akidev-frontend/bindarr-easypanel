@@ -308,23 +308,35 @@ db.initDb()
       }
     }, 1000 * 60 * 60 * 24 * 7);
 
-    // Daily: prices. Scryfall refreshes prices once a day, so this is both the
-    // most often worth doing and the most often allowed. `force` because the
-    // interval itself is already the right cadence.
+    // Prices. Hourly tick, and NOT forced — shouldSweepPrices decides whether
+    // each provider is actually due, from the admin's price_refresh_days.
+    //
+    // This used to tick daily and pass `force: true`, on the reasoning that the
+    // timer was itself the right cadence. Two things came of that. The interval
+    // could not be configured, which is a problem now that one selectable
+    // provider charges credits per card refreshed. And because the forced path
+    // never called shouldSweepPrices, a provider missing from its SWEEP_COLUMN
+    // map still looked like it was working: Lorcana has been in that state since
+    // it was added, and nobody could have noticed from the outside.
+    //
+    // Hourly rather than daily because a daily tick against a daily interval
+    // skips on any clock drift at all — "23h 59m elapsed" is not due, so the
+    // refresh silently becomes every other day. An hourly tick that refuses in
+    // one indexed read costs nothing and has no such edge.
     setInterval(() => {
-      tcgApi.updateCollectionPrices(true);
-      scryfallApi.updateCollectionPrices(true);
-      lorcastApi.updateCollectionPrices(true);
+      tcgApi.updateCollectionPrices();
+      scryfallApi.updateCollectionPrices();
+      lorcastApi.updateCollectionPrices();
       // Non-English Pokémon cards: their ids 404 on pokemontcg.io, so tcgApi's
       // sweep skips them and this is their only price refresh. No-op until the
       // user actually owns one.
-      require('./tcgdexApi').updateCollectionPrices(true);
+      require('./tcgdexApi').updateCollectionPrices();
       // TCGCSV runs LAST of the Pokémon sweeps on purpose. It writes the same
       // columns as the other two and is the better source — TCGplayer market
       // prices in USD, and 97% coverage against TCGdex's 8% — so it should have
       // the final say on any card it can place.
-      require('./tcgcsvApi').updateCollectionPrices(true);
-    }, 1000 * 60 * 60 * 24);
+      require('./tcgcsvApi').updateCollectionPrices();
+    }, 1000 * 60 * 60);
 
     // Shortly after startup, catch up if the last sweep was over a day ago.
     // NOT forced: without that gate this re-ran on every restart, which under
