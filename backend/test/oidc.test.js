@@ -73,10 +73,87 @@ function testExtractUserIdentity() {
   console.log('PASS: User claim extraction, normalization, and sanitization');
 }
 
+function testIssuerTransport() {
+  const { assertIssuerTransport } = oidc;
+
+  // https is the only thing good enough on a real network. The ID token is
+  // accepted on the strength of the connection it arrived over, so a plain-http
+  // issuer means anything on the path can be the identity provider.
+  assert.doesNotThrow(() => assertIssuerTransport('https://auth.example.com'));
+  assert.throws(() => assertIssuerTransport('http://auth.example.com'), /must be https/);
+
+  // Loopback never leaves the machine, and is what a local IdP and this suite use.
+  assert.doesNotThrow(() => assertIssuerTransport('http://localhost:9000'));
+  assert.doesNotThrow(() => assertIssuerTransport('http://127.0.0.1:9000'));
+
+  assert.throws(() => assertIssuerTransport('not a url'), /not a valid URL/);
+  console.log('PASS: issuer transport must be https or loopback');
+}
+
+function testIdTokenValidation() {
+  const { validateIdTokenClaims } = oidc;
+  const ISS = 'https://auth.example.com';
+  const CID = 'bindarr';
+  const NONCE = 'nonce-abc';
+  const ok = () => ({
+    iss: ISS,
+    aud: CID,
+    exp: Math.floor(Date.now() / 1000) + 600,
+    nonce: NONCE,
+    sub: 'user-1'
+  });
+  const check = (claims) => validateIdTokenClaims(claims, { issuer: ISS, clientId: CID, nonce: NONCE });
+
+  assert.doesNotThrow(() => check(ok()), 'a well-formed token must pass');
+
+  // No ID token at all. The authorization-code flow always returns one, so an
+  // empty object means something is wrong, not that there is nothing to check.
+  assert.throws(() => check({}), /no ID token/);
+  assert.throws(() => check(null), /no ID token/);
+
+  // iss: a discovery document naming someone else's token endpoint is the whole
+  // reason this is checked rather than assumed.
+  assert.throws(() => check({ ...ok(), iss: 'https://evil.example.com' }), /issued by/);
+  // A trailing slash is the same issuer, not a different one.
+  assert.doesNotThrow(() => check({ ...ok(), iss: ISS + '/' }));
+
+  // aud: a token minted for another client of the same IdP must not be replayable
+  // here, even though it is perfectly valid and correctly signed.
+  assert.throws(() => check({ ...ok(), aud: 'some-other-app' }), /not issued for this client/);
+  assert.doesNotThrow(() => check({ ...ok(), aud: ['some-other-app', CID] }),
+    'an array audience containing us is fine');
+  // Several audiences: azp says which one it was actually authorized for.
+  assert.throws(() => check({ ...ok(), aud: [CID, 'other'], azp: 'other' }), /different client/);
+  assert.doesNotThrow(() => check({ ...ok(), aud: [CID, 'other'], azp: CID }));
+
+  // exp
+  assert.throws(() => check({ ...ok(), exp: undefined }), /no expiry/);
+  assert.throws(() => check({ ...ok(), exp: Math.floor(Date.now() / 1000) - 3600 }), /expired/);
+  // Container clocks drift; a token that died two seconds ago is a support
+  // ticket, not an attack.
+  assert.doesNotThrow(() => check({ ...ok(), exp: Math.floor(Date.now() / 1000) - 2 }),
+    'a small clock skew must be tolerated');
+
+  // nonce: generated, sent and sealed into the state token since day one, and
+  // never once compared to what came back.
+  assert.throws(() => check({ ...ok(), nonce: 'a-different-login' }), /nonce does not match/);
+  assert.throws(() => check({ ...ok(), nonce: undefined }), /nonce does not match/);
+  // Nothing to compare against: no nonce was requested, so none is required.
+  assert.doesNotThrow(() => validateIdTokenClaims(
+    { ...ok(), nonce: undefined }, { issuer: ISS, clientId: CID }
+  ));
+
+  console.log('PASS: ID token iss/aud/exp/nonce validation');
+}
+
 async function testMockOidcFlow() {
   // Start temporary mock OIDC server
   let authCodeReceived = null;
   let codeVerifierReceived = null;
+  // The nonce the client asked for, echoed back in the ID token exactly as a
+  // real IdP does. Nothing verified this before -- the mock did not even send
+  // one -- so the test passed against a client that never looked.
+  let currentNonce = null;
 
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
@@ -101,6 +178,10 @@ async function testMockOidcFlow() {
         codeVerifierReceived = params.get('code_verifier');
 
         const mockIdTokenPayload = {
+          iss: `http://${req.headers.host}`,
+          aud: 'bindarr-test-client',
+          exp: Math.floor(Date.now() / 1000) + 3600,
+          nonce: currentNonce,
           sub: 'auth-user-999',
           preferred_username: 'RedChampion',
           email: 'red@kanto.org'
@@ -143,6 +224,8 @@ async function testMockOidcFlow() {
 
     const stateToken = parsedAuth.searchParams.get('state');
     assert(stateToken, 'state param must be set');
+    currentNonce = parsedAuth.searchParams.get('nonce');
+    assert(currentNonce, 'nonce param must be set');
 
     // 2. Test exchangeCode
     const exchangeResult = await oidc.exchangeCode({
@@ -169,6 +252,8 @@ async function main() {
   testPkce();
   testStateTokens();
   testExtractUserIdentity();
+  testIssuerTransport();
+  testIdTokenValidation();
   await testMockOidcFlow();
   console.log('PASS: oidc.test.js');
 }

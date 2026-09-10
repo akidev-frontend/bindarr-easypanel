@@ -126,7 +126,7 @@ All optional.
 | `CORS_ORIGIN` | — | Extra allowed origins, comma-separated. Localhost and private-LAN origins are always allowed. |
 | `ALLOW_REGISTRATION` | unset | `true` allows self-registration. Unset means invite-only: admins create accounts. |
 | `OIDC_ENABLED` | `false` | Set to `true` to enable OpenID Connect / SSO login (Authelia, Authentik, Keycloak, etc.). |
-| `OIDC_ISSUER_URL` | — | Base URL of the OIDC provider (e.g. `https://auth.example.com`). |
+| `OIDC_ISSUER_URL` | — | Base URL of the OIDC provider (e.g. `https://auth.example.com`). **Must be `https`** — `http` is accepted only for `localhost`/`127.0.0.1`. Bindarr accepts the ID token on the strength of the TLS connection it arrives over rather than verifying its signature (permitted for the authorization-code flow by [OIDC Core §3.1.3.7](https://openid.net/specs/openid-connect-core-1_0.html#IDTokenValidation)), so plain HTTP would leave the identity unauthenticated. The discovery document's own `issuer` must also match this value. |
 | `OIDC_CLIENT_ID` | — | OIDC OAuth2 client ID. |
 | `OIDC_CLIENT_SECRET` | — | OIDC OAuth2 client secret. |
 | `OIDC_PROVIDER_NAME` | `Single Sign-On` | Display name shown on the login button (e.g. `Authelia`, `Authentik`, `Keycloak`). |
