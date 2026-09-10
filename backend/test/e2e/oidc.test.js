@@ -27,6 +27,8 @@ async function runTests() {
     preferred_username: 'PalletTownTrainer',
     email: 'trainer@pallet.org'
   };
+  // Echoed into the ID token, as a real IdP does with the nonce it was sent.
+  let currentNonce = null;
 
   const idpServer = http.createServer((req, res) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
@@ -46,7 +48,13 @@ async function runTests() {
       let body = '';
       req.on('data', c => { body += c; });
       req.on('end', () => {
-        const payloadB64 = Buffer.from(JSON.stringify(mockUserClaims)).toString('base64url');
+        const payloadB64 = Buffer.from(JSON.stringify({
+          iss: `http://${req.headers.host}`,
+          aud: 'bindarr-test-id',
+          exp: Math.floor(Date.now() / 1000) + 3600,
+          nonce: currentNonce,
+          ...mockUserClaims
+        })).toString('base64url');
         const idToken = `eyJhbGciOiJub25lIn0.${payloadB64}.sig`;
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
@@ -114,6 +122,8 @@ async function runTests() {
     assert.strictEqual(authUrl.pathname, '/authorize');
     assert.strictEqual(authUrl.searchParams.get('client_id'), 'bindarr-test-id');
     const state = authUrl.searchParams.get('state');
+    currentNonce = authUrl.searchParams.get('nonce');
+    assert(currentNonce, 'the authorization request must carry a nonce');
     assert(state, 'state parameter must be present');
     console.log('PASS: F7-TC2');
 
@@ -148,7 +158,9 @@ async function runTests() {
       email: 'trainer@pallet.org'
     };
     const loginRes2 = await fetch(`${base}/api/auth/oidc/login`, { redirect: 'manual' });
-    const state2 = new URL(loginRes2.headers.get('location')).searchParams.get('state');
+    const authUrl2 = new URL(loginRes2.headers.get('location'));
+    const state2 = authUrl2.searchParams.get('state');
+    currentNonce = authUrl2.searchParams.get('nonce');
     const callbackRes2 = await fetch(`${base}/api/auth/oidc/callback?code=valid-auth-code-2&state=${encodeURIComponent(state2)}`, {
       redirect: 'manual'
     });
@@ -165,7 +177,9 @@ async function runTests() {
 
     // F7-TC6: Repeated login with same sub logs into existing member without duplicating rows
     const loginRes3 = await fetch(`${base}/api/auth/oidc/login`, { redirect: 'manual' });
-    const state3 = new URL(loginRes3.headers.get('location')).searchParams.get('state');
+    const authUrl3 = new URL(loginRes3.headers.get('location'));
+    const state3 = authUrl3.searchParams.get('state');
+    currentNonce = authUrl3.searchParams.get('nonce');
     const callbackRes3 = await fetch(`${base}/api/auth/oidc/callback?code=valid-auth-code-3&state=${encodeURIComponent(state3)}`, {
       redirect: 'manual'
     });
@@ -200,7 +214,9 @@ async function runTests() {
       email: 'attacker@example.invalid'
     };
     const loginRes4 = await fetch(`${base}/api/auth/oidc/login`, { redirect: 'manual' });
-    const state4 = new URL(loginRes4.headers.get('location')).searchParams.get('state');
+    const authUrl4 = new URL(loginRes4.headers.get('location'));
+    const state4 = authUrl4.searchParams.get('state');
+    currentNonce = authUrl4.searchParams.get('nonce');
     const callbackRes4 = await fetch(`${base}/api/auth/oidc/callback?code=valid-auth-code-4&state=${encodeURIComponent(state4)}`, {
       redirect: 'manual'
     });
@@ -218,7 +234,9 @@ async function runTests() {
       email: 'owner@pallet.org'
     };
     const loginRes5 = await fetch(`${base}/api/auth/oidc/login`, { redirect: 'manual' });
-    const state5 = new URL(loginRes5.headers.get('location')).searchParams.get('state');
+    const authUrl5 = new URL(loginRes5.headers.get('location'));
+    const state5 = authUrl5.searchParams.get('state');
+    currentNonce = authUrl5.searchParams.get('nonce');
     const callbackRes5 = await fetch(`${base}/api/auth/oidc/callback?code=valid-auth-code-5&state=${encodeURIComponent(state5)}`, {
       redirect: 'manual'
     });
@@ -230,6 +248,32 @@ async function runTests() {
     assert.strictEqual(ownerMe.user.id, meData.user.id, 'must still be the same owner account');
     assert.strictEqual(ownerMe.user.oidc_sub, 'idp-sub-777', 'the attacker must not have re-bound the owner');
     console.log('PASS: F7-TC8');
+
+    // F7-TC11: an ID token minted for a DIFFERENT login is refused.
+    //
+    // buildAuthorizationUrl has always generated a nonce, sent it to the IdP and
+    // sealed it into the signed state token. Nothing ever compared it to the
+    // claim that came back, so a token captured from an earlier exchange was as
+    // good as a fresh one. This drives the real route rather than the validator
+    // directly, because the bug was never in the checking -- it was that no one
+    // called it.
+    mockUserClaims = {
+      sub: 'idp-sub-777',
+      preferred_username: 'admin',
+      email: 'owner@pallet.org'
+    };
+    const loginRes6 = await fetch(`${base}/api/auth/oidc/login`, { redirect: 'manual' });
+    const authUrl6 = new URL(loginRes6.headers.get('location'));
+    const state6 = authUrl6.searchParams.get('state');
+    // The IdP answers with the nonce from some other login, not this one.
+    currentNonce = 'a-nonce-from-a-different-login';
+    const callbackRes6 = await fetch(`${base}/api/auth/oidc/callback?code=valid-auth-code-6&state=${encodeURIComponent(state6)}`, {
+      redirect: 'manual'
+    });
+    const replay = new URL(callbackRes6.headers.get('location'), base).searchParams;
+    assert.strictEqual(replay.get('oidc_token'), null, 'a mismatched nonce must not issue a session');
+    assert(/nonce/i.test(replay.get('oidc_error') || ''), 'the refusal must name the nonce');
+    console.log('PASS: F7-TC11');
 
   } finally {
     server.kill('SIGKILL');
@@ -254,6 +298,7 @@ async function runUsernameLinkTests() {
     preferred_username: 'admin',
     email: 'owner@pallet.org'
   };
+  let currentNonce = null;
 
   const idpServer = http.createServer((req, res) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
@@ -270,7 +315,13 @@ async function runUsernameLinkTests() {
     if (url.pathname === '/token' && req.method === 'POST') {
       req.on('data', () => {});
       req.on('end', () => {
-        const payloadB64 = Buffer.from(JSON.stringify(mockUserClaims)).toString('base64url');
+        const payloadB64 = Buffer.from(JSON.stringify({
+          iss: `http://${req.headers.host}`,
+          aud: 'bindarr-test-id',
+          exp: Math.floor(Date.now() / 1000) + 3600,
+          nonce: currentNonce,
+          ...mockUserClaims
+        })).toString('base64url');
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           access_token: 'mock-access-token',
@@ -315,7 +366,9 @@ async function runUsernameLinkTests() {
 
   const callback = async (code) => {
     const loginRes = await fetch(`${base}/api/auth/oidc/login`, { redirect: 'manual' });
-    const state = new URL(loginRes.headers.get('location')).searchParams.get('state');
+    const authUrl = new URL(loginRes.headers.get('location'));
+    const state = authUrl.searchParams.get('state');
+    currentNonce = authUrl.searchParams.get('nonce');
     const res = await fetch(`${base}/api/auth/oidc/callback?code=${code}&state=${encodeURIComponent(state)}`, {
       redirect: 'manual'
     });

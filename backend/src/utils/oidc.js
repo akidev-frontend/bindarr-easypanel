@@ -66,6 +66,84 @@ function getIssuerUrl() {
   return (process.env.OIDC_ISSUER_URL || '').trim().replace(/\/+$/, '');
 }
 
+// Everything below trusts the transport instead of a signature: the ID token is
+// accepted because it came straight from the token endpoint over TLS, which is
+// what OIDC Core 3.1.3.7 allows in place of verifying it. Over plain http that
+// reasoning is worth nothing -- anything on the path can serve the discovery
+// document, be the token endpoint, and mint whatever identity it likes.
+//
+// Loopback is exempt because it never leaves the machine, and it is what the
+// test suite and a local IdP actually use.
+function assertIssuerTransport(issuer) {
+  let url;
+  try {
+    url = new URL(issuer);
+  } catch {
+    throw new Error(`OIDC_ISSUER_URL is not a valid URL: ${issuer}`);
+  }
+  if (url.protocol === 'https:') return;
+  if (url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]', '::1'].includes(url.hostname)) return;
+  throw new Error(
+    `OIDC_ISSUER_URL must be https (got ${url.protocol}//${url.hostname}). ` +
+    'Identity is only as trustworthy as the connection it arrives over.'
+  );
+}
+
+// Bounded skew for exp. Clocks in a self-hosted stack drift, and refusing a
+// token that expired half a second ago by the container's reckoning is a
+// support ticket, not security.
+const CLOCK_SKEW_SECONDS = 60;
+
+// The checks the code flow still needs once the signature is taken on trust.
+//
+// Each one answers a question TLS does not:
+//   iss    -- did this come from the issuer we configured, or one whose discovery
+//             document happened to name someone else's token endpoint?
+//   aud    -- was it minted for THIS client, or replayed from another client of
+//             the same IdP that the caller also has an account with?
+//   exp    -- is it still current?
+//   nonce  -- is it the token minted for THIS login, or one captured earlier?
+//             buildAuthorizationUrl has always generated a nonce, sent it to the
+//             IdP and sealed it into the state token. Nothing ever compared it to
+//             the claim coming back, which meant it read as replay protection in
+//             review and was none.
+//
+// Throws on the first failure; the caller turns that into an oidc_error redirect.
+function validateIdTokenClaims(claims, { issuer, clientId, nonce, now = Date.now() } = {}) {
+  if (!claims || typeof claims !== 'object' || !Object.keys(claims).length) {
+    throw new Error('OIDC provider returned no ID token. The authorization code flow requires one.');
+  }
+
+  const strip = (v) => String(v || '').replace(/\/+$/, '');
+  if (issuer && strip(claims.iss) !== strip(issuer)) {
+    throw new Error(`OIDC ID token was issued by "${claims.iss}", not by the configured issuer.`);
+  }
+
+  // aud is a string, or an array when the IdP issues to several clients at once.
+  const audiences = Array.isArray(claims.aud) ? claims.aud.map(String) : [String(claims.aud || '')];
+  if (clientId && !audiences.includes(clientId)) {
+    throw new Error('OIDC ID token was not issued for this client.');
+  }
+  // With more than one audience the spec requires azp, and requires it to be us.
+  if (audiences.length > 1 && claims.azp && String(claims.azp) !== clientId) {
+    throw new Error('OIDC ID token was authorized for a different client.');
+  }
+
+  const exp = Number(claims.exp);
+  if (!Number.isFinite(exp)) {
+    throw new Error('OIDC ID token has no expiry.');
+  }
+  if (exp * 1000 + CLOCK_SKEW_SECONDS * 1000 < now) {
+    throw new Error('OIDC ID token has expired. Please try logging in again.');
+  }
+
+  if (nonce && String(claims.nonce || '') !== String(nonce)) {
+    throw new Error('OIDC ID token nonce does not match this login attempt.');
+  }
+
+  return claims;
+}
+
 function resolveRedirectUri(req) {
   if (process.env.OIDC_REDIRECT_URI) {
     return process.env.OIDC_REDIRECT_URI.trim();
@@ -111,6 +189,7 @@ async function getDiscovery(forceRefresh = false) {
   if (!issuer) {
     throw new Error('OIDC_ISSUER_URL is not configured');
   }
+  assertIssuerTransport(issuer);
 
   const now = Date.now();
   if (!forceRefresh && discoveryCache && discoveryExpiresAt > now) {
@@ -130,6 +209,15 @@ async function getDiscovery(forceRefresh = false) {
   const doc = await res.json();
   if (!doc.authorization_endpoint || !doc.token_endpoint) {
     throw new Error(`Invalid OIDC discovery response from ${discoveryUrl}: missing endpoints`);
+  }
+  // OIDC Discovery 4.3: the issuer the document claims must be the one we asked.
+  // Without this a redirect -- or anything that can answer for the host once --
+  // can hand back a document naming a token endpoint it controls, and every
+  // later check would then be measured against the attacker's own issuer.
+  if (String(doc.issuer || '').replace(/\/+$/, '') !== issuer) {
+    throw new Error(
+      `OIDC discovery at ${discoveryUrl} declares issuer "${doc.issuer}", which is not ${issuer}.`
+    );
   }
 
   discoveryCache = doc;
@@ -307,6 +395,13 @@ async function exchangeCode({ code, stateToken, req }) {
 
   const tokens = await tokenRes.json();
   const idTokenClaims = tokens.id_token ? parseJwtPayload(tokens.id_token) : {};
+  validateIdTokenClaims(idTokenClaims, {
+    issuer: discovery.issuer,
+    clientId,
+    // Sealed into the state token by buildAuthorizationUrl and carried through
+    // the IdP, so a token minted for some earlier login cannot be replayed here.
+    nonce: stateData.n
+  });
 
   // Fetch from userinfo endpoint if available to ensure all profile claims are present
   let userInfoClaims = {};
@@ -377,6 +472,8 @@ module.exports = {
   getDefaultRole,
   getUserClaimName,
   isUsernameLinkEnabled,
+  assertIssuerTransport,
+  validateIdTokenClaims,
   getTokenEndpointAuthMethod,
   getDiscovery,
   generatePkce,
