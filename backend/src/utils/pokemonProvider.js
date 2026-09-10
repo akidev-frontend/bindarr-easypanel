@@ -60,4 +60,25 @@ async function usesTcgdex(lang) {
   return (await providerFor(lang)) === TCGDEX;
 }
 
-module.exports = { decide, configured, providerFor, usesTcgdex, TCGDEX, POKEMONTCG };
+// pokemontcg.io is being retired by its operator: new API-key registrations are
+// already closed, and existing keys stop working on this date.
+const POKEMONTCG_SUNSET = '2027-03-01';
+
+// The boot warning, as a value rather than a side effect, so the two things
+// that are easy to get wrong can be tested: it must be silent for installs the
+// deprecation does not apply to, and silent again once the date has passed —
+// after that it is not a warning, it is an explanation, and the provider's own
+// errors give a better one than a line at startup can.
+//
+// Returns null when there is nothing to say.
+function sunsetNotice(provider, now = Date.now()) {
+  if (provider !== POKEMONTCG) return null;
+  const sunset = Date.parse(`${POKEMONTCG_SUNSET}T00:00:00Z`);
+  if (now >= sunset) return null;
+  const days = Math.ceil((sunset - now) / 86400000);
+  return `Pokémon provider is pokemontcg.io, which stops serving on ${POKEMONTCG_SUNSET} (${days} days).`
+    + ' New API keys can no longer be registered. Switch to TCGdex in Admin → Instance Settings;'
+    + ' it needs no key, and cards already cached keep working.';
+}
+
+module.exports = { decide, configured, providerFor, usesTcgdex, sunsetNotice, POKEMONTCG_SUNSET, TCGDEX, POKEMONTCG };
