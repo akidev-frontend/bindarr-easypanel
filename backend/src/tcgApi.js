@@ -35,6 +35,19 @@ tcgClient.interceptors.response.use(null, async (error) => {
 });
 
 // Helper: Extract a single representative price from card data
+// How long a cached card is considered current. Referenced from three places --
+// searchCards, getCardById and the price sweep -- and the sweep now selects on
+// it in SQL, so it has to be one number rather than three copies. Two that
+// disagree would have the sweep pick cards getCardById then refuses to refresh:
+// a loop that runs for an hour and changes nothing, silently.
+const CACHE_AGE_LIMIT_DAYS = 3;
+const CACHE_AGE_LIMIT_MS = 1000 * 60 * 60 * 24 * CACHE_AGE_LIMIT_DAYS;
+
+// Spacing between price requests. pokemontcg.io allows 20,000 a day with a key,
+// so this is politeness rather than a limit the sweep is anywhere near.
+// Overridable so the test suite need not spend a real second per card.
+const PRICE_REQUEST_GAP_MS = Number(process.env.POKEMON_PRICE_GAP_MS || 1000);
+
 function extractPrice(card) {
   if (card.tcgplayer && card.tcgplayer.prices) {
     const pricesObj = card.tcgplayer.prices;
@@ -313,8 +326,7 @@ async function runSearch(meta, nameQuery = '', numberQuery = '', setQuery = '', 
     // If we found local results and they are not empty, return them instantly.
     // Stale prices (older than 3 days) are updated asynchronously in the background.
     if (localResults.length > 0) {
-      const cacheAgeLimit = 1000 * 60 * 60 * 24 * 3; // 3 days
-      const staleCards = localResults.filter(r => (new Date() - new Date(r.last_updated) > cacheAgeLimit));
+      const staleCards = localResults.filter(r => (new Date() - new Date(r.last_updated) > CACHE_AGE_LIMIT_MS));
       const hasKey = apiKey || process.env.POKEMON_TCG_API_KEY;
       if (staleCards.length > 0 && hasKey) {
         (async () => {
@@ -490,9 +502,8 @@ async function getCardById(id, apiKey = '') {
     return cached ? parseCardRow(cached) : null;
   }
 
-  // If cached and fresh (e.g. within 3 days), return it
-  const cacheAgeLimit = 1000 * 60 * 60 * 24 * 3; // 3 days
-  if (cached && (new Date() - new Date(cached.last_updated) < cacheAgeLimit)) {
+  // If cached and fresh, return it — no request, no rate limit spent.
+  if (cached && (new Date() - new Date(cached.last_updated) < CACHE_AGE_LIMIT_MS)) {
     return parseCardRow(cached);
   }
 
@@ -603,22 +614,43 @@ async function updateCollectionPrices(force = false) {
   }
 
   try {
-    // Select unique Pokémon card IDs from both collections (owned and wishlist)
-    // and decks. MTG cards are excluded — they refresh via Scryfall on search,
-    // and hitting the Pokémon API for an "mtg-" id would just 404.
-    // English only — non-English Pokémon rows come from TCGdex and are swept by
-    // tcgdexApi.updateCollectionPrices, so asking pokemontcg.io about them would
-    // burn a second of rate limit per card to get a 404.
+    // Owned and decked Pokémon cards that are actually STALE.
+    //
+    // The staleness clause is the point. This used to select every owned card and
+    // hand each one to getCardById, which returns the cached row untouched when it
+    // is under CACHE_AGE_LIMIT_DAYS old -- and then slept a second regardless of
+    // whether a request had been made. The sweep runs daily against a three-day
+    // cache, so on two days out of three it made almost no requests and still took
+    // one second per owned card to make them: on a 5,000-card collection that is
+    // 83 minutes of a container doing nothing but setTimeout. Now the days with
+    // nothing to do cost nothing, and the second between requests is spent only
+    // where there is a request to space out.
+    //
+    // MTG is excluded — it refreshes via Scryfall on search, and asking
+    // pokemontcg.io about an "mtg-" id would just 404. English only — non-English
+    // Pokémon rows come from TCGdex and are swept by its own updateCollectionPrices.
+    //
+    // Driven from collection/deck_cards and joined to card_cache by primary key,
+    // which is what keeps the added clause cheap; see #49 for the shape to avoid.
+    const staleClause = `cc.game = 'pokemon' AND cc.language = 'English'
+        AND (cc.last_updated IS NULL OR cc.last_updated <= datetime('now', '-${CACHE_AGE_LIMIT_DAYS} days'))`;
     const cardsInUse = await db.all(`
       SELECT DISTINCT c.card_id FROM collection c
-      JOIN card_cache cc ON c.card_id = cc.id WHERE cc.game = 'pokemon' AND cc.language = 'English'
+      JOIN card_cache cc ON c.card_id = cc.id WHERE ${staleClause}
       UNION
       SELECT DISTINCT d.card_id FROM deck_cards d
-      JOIN card_cache cc ON d.card_id = cc.id WHERE cc.game = 'pokemon' AND cc.language = 'English'
+      JOIN card_cache cc ON d.card_id = cc.id WHERE ${staleClause}
     `);
-    
-    console.log(`Starting background price update for ${cardsInUse.length} unique cards...`);
-    for (const item of cardsInUse) {
+
+    if (!cardsInUse.length) {
+      await markPricesSwept('pokemon');
+      console.log('Pokémon price update: every owned card is current, nothing to fetch.');
+      return;
+    }
+
+    console.log(`Starting background price update for ${cardsInUse.length} stale cards...`);
+    for (let i = 0; i < cardsInUse.length; i++) {
+      const item = cardsInUse[i];
       try {
         // Fetching will force update the cache and price
         const updatedCard = await getCardById(item.card_id, process.env.POKEMON_TCG_API_KEY);
@@ -627,8 +659,9 @@ async function updateCollectionPrices(force = false) {
       } catch (itemErr) {
         console.error(`Failed to update price for card ${item.card_id}:`, itemErr.message);
       }
-      // Wait 1 second between requests to respect API rate limits
-      await new Promise(r => setTimeout(r, 1000));
+      // A second between requests, to respect the rate limit. Between, not after:
+      // the old loop also paid it once the last card was already done.
+      if (i < cardsInUse.length - 1) await new Promise(r => setTimeout(r, PRICE_REQUEST_GAP_MS));
     }
     await markPricesSwept('pokemon');
     console.log('Background price update complete.');
