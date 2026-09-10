@@ -60,7 +60,7 @@ services:
       - "3443:3443"   # HTTPS — use this directly if you have no proxy (scanning needs it)
     environment: {}
       # All optional — see the table below.
-      # - POKEMON_TCG_API_KEY=
+      # - POKEMON_TCG_API_KEY=       # only if you already have one; pokemontcg.io is deprecated (see below)
       # - PUBLIC_BASE_URL=
       # - DEFAULT_ADMIN_PASSWORD=
       # - TRUST_PROXY=1
@@ -121,7 +121,7 @@ All optional.
 | `SSL_CERT_PATH` / `SSL_KEY_PATH` | — | Your own certificate instead of the generated self-signed one. |
 | `DB_PATH` | `/app/database/bindarr.db` | SQLite file location. |
 | `DEFAULT_ADMIN_PASSWORD` | — | Create the `admin` account with this password at startup instead of letting the first browser visit create the owner account. Only applied while the `users` table is empty — changing it later does nothing to an existing account. |
-| `POKEMON_TCG_API_KEY` | — | Free key from [dev.pokemontcg.io](https://dev.pokemontcg.io/). Raises the Pokémon rate limit from 1,000 to 20,000 requests/day. |
+| `POKEMON_TCG_API_KEY` | — | **Only for installs still on the pokemontcg.io provider.** Raises its rate limit from 1,000 to 20,000 requests/day. pokemontcg.io is deprecated: [new registrations are closed](https://dev.pokemontcg.io/) and existing keys stop working on **1 March 2027**. New installs default to TCGdex, which needs no key — leave this unset. |
 | `PUBLIC_BASE_URL` | — | External URL behind a proxy, e.g. `https://cards.example.com`. Used for share links and auto-allowed as a CORS origin, so proxied logins work with just this. Also editable in the Admin panel. |
 | `CORS_ORIGIN` | — | Extra allowed origins, comma-separated. Localhost and private-LAN origins are always allowed. |
 | `ALLOW_REGISTRATION` | unset | `true` allows self-registration. Unset means invite-only: admins create accounts. |
