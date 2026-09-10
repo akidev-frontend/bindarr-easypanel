@@ -25,6 +25,23 @@ const pokemonSetSource = async () =>
     ? require('./tcgdexApi')
     : tcgApi;
 
+// Say the provider deprecation out loud at boot, to the installs it applies to.
+//
+// It is written down everywhere already — README, .env.example, the Admin
+// provider hint — and none of that reaches the person who set this up two years
+// ago and has not opened Settings since. The startup log is what a self-hoster
+// actually reads, and it is where they will be looking the morning it breaks.
+//
+// The decision lives in utils/pokemonProvider with the rest of the provider
+// policy; this only prints it.
+async function warnIfProviderSunsetting() {
+  try {
+    const provider = require('./utils/pokemonProvider');
+    const notice = provider.sunsetNotice(await provider.configured());
+    if (notice) console.warn(notice);
+  } catch { /* a boot-time notice must never be the thing that stops the boot */ }
+}
+
 const authRoutes = require('./routes/auth');
 const sharedRoutes = require('./routes/shared');
 const adminRoutes = require('./routes/admin');
@@ -244,6 +261,14 @@ db.initDb()
     await (await pokemonSetSource()).fetchAndCacheSets();
     await scryfallApi.fetchAndCacheSets();
     await lorcastApi.fetchAndCacheSets();
+
+    // pokemontcg.io has an end date, and static documentation does not reach
+    // someone who set this up two years ago and has not opened Settings since.
+    // The startup log is the surface self-hosters actually read, so say it there
+    // — once per boot, only to the installs it applies to, and only until the
+    // date passes, after which it is no longer a warning but a description of
+    // why things stopped working, which the provider's own errors will cover.
+    await warnIfProviderSunsetting();
 
     // Load sets into compartmentSort memory cache
     const { loadSetsCache } = require('./utils/compartmentSort');

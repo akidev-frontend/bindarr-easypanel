@@ -17,7 +17,7 @@ const path = require('path');
 
 process.env.DB_PATH = path.join(os.tmpdir(), `bindarr-provider-${process.pid}.db`);
 const cardSets = require('../src/cardSets');
-const { decide, TCGDEX, POKEMONTCG } = require('../src/utils/pokemonProvider');
+const { decide, sunsetNotice, POKEMONTCG_SUNSET, TCGDEX, POKEMONTCG } = require('../src/utils/pokemonProvider');
 
 function testLanguageVeto() {
   // pokemontcg.io has no non-English cards at all, so the SETTING CANNOT WIN here.
@@ -118,12 +118,45 @@ function testIdDispatchIsAboutTheIdNotTheSetting() {
   }
 }
 
+
+// The boot warning about pokemontcg.io being retired.
+//
+// Two ways for a notice like this to go wrong, and both are silent: shouting at
+// installs it does not apply to, and still shouting years after the date has
+// passed. Neither shows up in normal use — the first is someone else's log, the
+// second is a date nobody re-reads — so they are pinned here.
+function testSunsetNotice() {
+  const beforeSunset = Date.parse(`${POKEMONTCG_SUNSET}T00:00:00Z`) - 30 * 86400000;
+  const afterSunset = Date.parse(`${POKEMONTCG_SUNSET}T00:00:00Z`) + 86400000;
+
+  // The install it applies to: still on pokemontcg.io, date not yet reached.
+  const notice = sunsetNotice(POKEMONTCG, beforeSunset);
+  assert(notice, 'an install still on pokemontcg.io must be warned');
+  assert(notice.includes(POKEMONTCG_SUNSET), 'the notice must name the date');
+  assert(/30 days/.test(notice), 'the notice must say how long is left');
+  assert(/TCGdex/.test(notice), 'the notice must name the way out');
+
+  // Not their problem: TCGdex installs hear nothing.
+  assert.strictEqual(sunsetNotice(TCGDEX, beforeSunset), null,
+    'a TCGdex install has nothing to be warned about');
+
+  // Past the date it stops being a warning. The provider's own failures explain
+  // it better than a line at boot, and a countdown that has run out is noise on
+  // every restart forever.
+  assert.strictEqual(sunsetNotice(POKEMONTCG, afterSunset), null,
+    'the warning must stop once the date has passed');
+
+  // Exactly at the boundary counts as passed.
+  assert.strictEqual(sunsetNotice(POKEMONTCG, Date.parse(`${POKEMONTCG_SUNSET}T00:00:00Z`)), null);
+}
+
 async function main() {
   testIdDispatchIsAboutTheIdNotTheSetting();
   testLanguageVeto();
   testUnknownLanguageDegradesToEnglish();
   testEnglishFollowsTheSetting();
   testUnknownSettingIsSafe();
+  testSunsetNotice();
   await testNoSecondSourceOfTruth();
   console.log('pokemonprovider.test.js: all assertions passed');
 }
