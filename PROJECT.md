@@ -164,9 +164,16 @@ The API's card endpoint does not document a region filter. Searches filter
 `print_region` before applying Bindarr's page/limit window, following cursors even
 when a page has no matching region. Set lists use `region=WEST|JP|CN`, and set
 cards use the `/cards?set=...` shortcut. All list requests use `limit=250` and
-include images, translations and prices in the same card response, avoiding
-one detail lookup per search result. User-entered names are quoted as literal
-query phrases; set IDs go through the separate `set` parameter.
+include images and translations but NOT prices: prices are what the API's
+credits pay for (a 250-card page measured 1 credit without them and 40 with
+them), so listing rows are cached unpriced (`price_trend` null, which
+`extractPrices` distinguishes from a genuine zero) and `cacheListedCards` copies
+any price already stored onto the incoming row so a listing never erases one.
+The price arrives at the two moments the app shows a value: `hydrateCard`, called
+by `cardApi.hydrate` when a card enters the collection, fetches that one card
+with prices (2 credits); and the daily sweep prices owned/decked cards in batches.
+User-entered names are quoted as literal query phrases; set IDs go through the
+separate `set` parameter.
 
 `pokemontcgapi_cache` stores complete response bodies, ETags and fetch times for
 up to 1,024 requests. A key digest scopes entries to the account's plan visibility;

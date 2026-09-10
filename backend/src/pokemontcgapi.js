@@ -13,7 +13,16 @@ const { parseCardRow, parseSqliteUtc, recordPrice, shouldSweepPrices, markPrices
 const BASE = 'https://api.pokemontcgapi.com/v1';
 const PREFIX = 'pokemontcgapi-';
 const DAY = 24 * 60 * 60 * 1000;
-const INCLUDE = 'images,prices,translations';
+// Two include lists, because prices are what cost credits. A 250-card page is one
+// credit without them and about forty with them (measured against the live API on
+// 10 Sep 2026: limit 5 with prices cost 4 credits, 50 cost 8, 250 cost 40; every
+// size without prices cost 1). So browsing and searching ask for images and names
+// only, and prices are fetched per card at the two moments the app shows a value:
+// when a card enters the collection (hydrateCard) and in the daily sweep over
+// owned cards. On the 800-credit trial that is the difference between twenty
+// searches and eight hundred.
+const LIST_INCLUDE = 'images,translations';
+const CARD_INCLUDE = 'images,prices,translations';
 const REGIONS = { en: 'WEST', ja: 'JP', 'zh-cn': 'CN' };
 const client = axios.create({
   baseURL: BASE, timeout: 15000, maxRedirects: 0,
@@ -99,7 +108,16 @@ async function* pages(path, params) {
 // A quote for a slab, another locale or a different currency is not a fallback
 // for this raw card. Pick one source first, then fill every printing column
 // from that source alone; resolveCardPrice assumes they share price_currency.
-function extractPrices(prices = [], lang = 'en') {
+function extractPrices(prices, lang = 'en') {
+  // `undefined` means the response was asked WITHOUT prices (a listing page), which
+  // is not the same as a card nobody quotes (an empty array). The first is unknown
+  // and stays null so hydrateCard knows to fetch it; the second is a genuine zero.
+  if (prices === undefined) {
+    return {
+      price_trend: null, price_normal: null, price_holofoil: null, price_reverse_holofoil: null,
+      price_avg1: null, price_avg7: null, price_avg30: null, price_currency: null, price_source: 'pokemontcgapi',
+    };
+  }
   const code = languages.toCode(lang);
   const eligible = prices.filter(p => !p.grading && p.variant !== 'MEDIAN_GRADED' &&
     Number.isFinite(p.amount) && p.amount > 0 && (!p.locale || p.locale.toLowerCase() === code) &&
@@ -143,13 +161,40 @@ function normalizeCard(card) {
     rarity: card.rarity || '', number: String(card.number ?? ''),
     set_id: PREFIX + card.set_code, set_name: card.set_name || '', image_url: images[0]?.url || '',
     game: 'pokemon', language: languages.toName(code), cmc: null, color_identity: [],
-    ...extractPrices(card.prices || [], code),
+    ...extractPrices(card.prices, code),
     tcgplayer_product_id: card.tcgplayer_id || null,
     tcgplayer_url: card.tcgplayer_id ? `https://www.tcgplayer.com/product/${card.tcgplayer_id}` : null,
     cardmarket_url: card.cardmarket_id ? `https://www.cardmarket.com/en/Pokemon/Products?idProduct=${card.cardmarket_id}` : null,
   };
 }
 const cacheCards = cards => cacheNormalizedCards(cards, 'pokemon');
+
+// Listing rows carry no prices. A price already in card_cache came from a detail
+// fetch or the daily sweep and cost credits; the upsert would reset it to null, so
+// the stored price columns are copied onto the incoming row first.
+const PRICE_COLUMNS = ['price_trend', 'price_normal', 'price_holofoil', 'price_reverse_holofoil',
+  'price_avg1', 'price_avg7', 'price_avg30', 'price_currency', 'price_source'];
+async function cacheListedCards(cards) {
+  if (!cards.length) return;
+  const kept = new Map();
+  for (let i = 0; i < cards.length; i += 200) {
+    const ids = cards.slice(i, i + 200).map(c => c.id);
+    const rows = await db.all(`SELECT id, ${PRICE_COLUMNS.join(', ')} FROM card_cache
+      WHERE price_trend IS NOT NULL AND id IN (${ids.map(() => '?').join(', ')})`, ids);
+    for (const row of rows) kept.set(row.id, row);
+  }
+  await cacheCards(cards.map(c => (kept.has(c.id) ? { ...c, ...kept.get(c.id) } : c)));
+}
+
+// Called when a card enters the collection: the one moment a browsed card needs a
+// price. A row that already carries one is left alone; a listing row (price_trend
+// null) is fetched in full, which costs two credits for that card only.
+async function hydrateCard(id) {
+  if (!String(id).startsWith(PREFIX)) return;
+  const cached = await db.get('SELECT price_trend FROM card_cache WHERE id = ?', [id]);
+  if (cached && cached.price_trend != null) return;
+  await getCardById(id, { refresh: true });
+}
 
 async function listSets(lang = 'en') {
   const region = REGIONS[languages.toCode(lang)];
@@ -187,9 +232,9 @@ async function getCardsBySet(set, lang = 'en') {
   const region = REGIONS[languages.toCode(lang)];
   if (!region) return [];
   const cards = [];
-  for await (const rows of pages('/cards', { set: providerId(set), include: INCLUDE, orderBy: 'number' })) {
+  for await (const rows of pages('/cards', { set: providerId(set), include: LIST_INCLUDE, orderBy: 'number' })) {
     const normalized = rows.filter(c => c.print_region === region).map(normalizeCard);
-    await cacheCards(normalized);
+    await cacheListedCards(normalized);
     cards.push(...normalized);
   }
   return cards;
@@ -222,7 +267,7 @@ async function searchCards({ name = '', number = '', set = '', scope = 'database
   }
   if (!REGIONS[code] || (!name && !setList.length)) return { cards: [], total: 0 };
   try {
-    const params = { include: INCLUDE, orderBy: 'id', lang: code === 'ja' ? 'ja' : 'en' };
+    const params = { include: LIST_INCLUDE, orderBy: 'id', lang: code === 'ja' ? 'ja' : 'en' };
     if (setList.length) params.set = setList.map(providerId).join(',');
     if (name) params.q = `name:${quote(name)}`;
     const matches = [];
@@ -231,7 +276,7 @@ async function searchCards({ name = '', number = '', set = '', scope = 'database
     // Full 250-card pages are reused from the response cache on Load more.
     for await (const rows of pages('/cards', params)) {
       const normalized = rows.filter(c => c.print_region === REGIONS[code]).map(normalizeCard);
-      await cacheCards(normalized);
+      await cacheListedCards(normalized);
       for (const card of normalized) {
         if (!number || card.number === number || (/^\d+$/.test(number) && /^\d+$/.test(card.number) && Number(card.number) === Number(number))) matches.push(card);
       }
@@ -245,12 +290,15 @@ async function searchCards({ name = '', number = '', set = '', scope = 'database
   }
 }
 
-async function getCardById(id) {
+async function getCardById(id, { refresh = false } = {}) {
   if (!String(id).startsWith(PREFIX)) return null;
   const cached = await db.get('SELECT * FROM card_cache WHERE id = ?', [id]);
-  if (cached && Date.now() - parseSqliteUtc(cached.last_updated).getTime() < 3 * DAY) return parseCardRow(cached);
+  // A fresh row still counts as stale when it never had prices: it came from a
+  // listing page, and the inspector asking for this one card is what a detail
+  // fetch is for.
+  if (!refresh && cached && cached.price_trend != null && Date.now() - parseSqliteUtc(cached.last_updated).getTime() < 3 * DAY) return parseCardRow(cached);
   try {
-    const raw = await request(`/cards/${encodeURIComponent(providerId(id))}`, { include: INCLUDE });
+    const raw = await request(`/cards/${encodeURIComponent(providerId(id))}`, { include: CARD_INCLUDE });
     const card = normalizeCard(raw);
     await cacheCards([card]);
     return card;
@@ -275,7 +323,7 @@ async function updateCollectionPrices(force = false) {
     // detail requests and no whole-set sweep just to refresh one owned card.
     for (let i = 0; i < owned.length; i += 25) {
       const q = owned.slice(i, i + 25).map(c => `id:${quote(providerId(c.id))}`).join(' OR ');
-      for await (const rows of pages('/cards', { q, include: INCLUDE })) {
+      for await (const rows of pages('/cards', { q, include: CARD_INCLUDE })) {
         const cards = rows.map(normalizeCard);
         await cacheCards(cards);
         for (const card of cards) await recordPrice(card.id, card.price_trend);
@@ -288,4 +336,4 @@ async function updateCollectionPrices(force = false) {
 }
 
 module.exports = { client, hasKey, providerId, normalizeCard, extractPrices, cacheCards, listSets, fetchAndCacheSets,
-  getCardsBySet, searchCards, getCardById, updateCollectionPrices };
+  getCardsBySet, searchCards, getCardById, hydrateCard, updateCollectionPrices, LIST_INCLUDE, CARD_INCLUDE };

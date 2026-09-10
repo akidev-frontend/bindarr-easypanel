@@ -196,10 +196,17 @@ to price existing providers' cards, but does not overwrite these quotes.
 
 Requests use up to 250 cards per page, cursor pagination, a persistent response
 cache and conditional ETag requests. Normalized cards also live in `card_cache`.
-The daily price refresh batches only owned or decked cards while this provider is
-selected. Catalogue builds and searches consume API credits, so check the account's
-quota before building a whole language. An outage serves matching cached cards or
-reports an error; it does not silently switch ID namespaces.
+
+The API meters credits, and prices are what cost them: a 250-card page is one
+credit without prices and about forty with them (measured 10 Sep 2026). So
+browsing and searching fetch names and artwork only, and a card is priced at the
+two moments the app shows a value: when it enters your collection (two credits for
+that card) and in the daily refresh of owned or decked cards (batched, about one
+credit per six cards). Search results therefore show no price until a card is
+added. A full catalogue build of a language costs roughly one credit per 250
+cards (Japanese, the largest release line, is under 100 credits), so check the
+account's quota before building a whole language. An outage serves matching
+cached cards or reports an error; it does not silently switch ID namespaces.
 
 Switching provider keeps existing collection entries and their IDs. Existing scan
 catalogs remain usable; rebuild the relevant language catalog to include the new

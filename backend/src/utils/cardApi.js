@@ -44,6 +44,14 @@ function gameOf(id, requestedGame) {
 // else); the others always cache complete cards. Never throws — hydration is an
 // improvement, and failing it must not block adding a card.
 async function hydrate(id) {
+  // pokemontcgapi.com rows are thin in a different way: listing pages are asked
+  // without prices because prices are what its credits pay for, so the price is
+  // fetched here, once, for the card actually entering the collection.
+  if (isPokemontcgapiId(id)) {
+    try { await require('../pokemontcgapi').hydrateCard(id); }
+    catch (e) { console.warn(`Could not hydrate ${id}: ${e.message}`); }
+    return;
+  }
   if (!isTcgdexId(id)) return;
   try { await tcgdexApi.hydrateCard(id); }
   catch (e) { console.warn(`Could not hydrate ${id}: ${e.message}`); }

@@ -93,7 +93,7 @@ async function paginationAndSets() {
     }
     assert.strictEqual(config.url, '/cards');
     assert.strictEqual(config.params.set, 'm6');
-    assert.strictEqual(config.params.include, 'images,prices,translations');
+    assert.strictEqual(config.params.include, 'images,translations', 'set pages are asked without prices');
     return config.params.cursor ? envelope([card('m6-251', 'JP')]) : envelope(Array.from({ length: 250 }, (_, i) => ({ ...card(`m6-${i + 1}`, 'JP'), number: String(i + 1) })), 'https://api.pokemontcgapi.com/v1/cards?cursor=opaque-card-page-2');
   };
   const result = await api.listSets('ja');
@@ -316,6 +316,41 @@ async function pricesAndQuota() {
   assert.strictEqual(calls.length, 1, '429 pauses other requests without a retry storm');
 }
 
+// Prices are what the API's credits pay for: a listing page costs one credit
+// without them and about forty with them. So listings never ask for prices, a card
+// is priced when it enters the collection, and a listing can never erase a price.
+async function creditDiscipline() {
+  await clear();
+  await db.run("DELETE FROM card_cache WHERE id = 'pokemontcgapi-bs-4'");
+  await db.run("UPDATE app_settings SET pokemon_provider = 'pokemontcgapi'");
+  const listed = { ...card('bs-4') };
+  delete listed.prices;
+  respond = config => {
+    assert.strictEqual(config.url, '/cards');
+    assert.strictEqual(config.params.include, 'images,translations', 'search pages are asked without prices');
+    return envelope([listed]);
+  };
+  const { cards } = await api.searchCards({ name: 'Charizard', scope: 'internet' });
+  assert.strictEqual(cards[0].price_trend, null, 'a listing row is unpriced, not priced at zero');
+  assert.strictEqual(cards[0].image_url, raw.images[0].url, 'a listing row still carries its art');
+  respond = config => {
+    assert.strictEqual(config.url, '/cards/bs-4');
+    assert.strictEqual(config.params.include, 'images,prices,translations', 'the card entering the collection is fetched with prices');
+    return raw;
+  };
+  await cardApi.hydrate('pokemontcgapi-bs-4');
+  assert.strictEqual(calls.length, 2, 'one listing page plus one detail fetch');
+  assert.strictEqual((await db.get("SELECT price_trend FROM card_cache WHERE id = 'pokemontcgapi-bs-4'")).price_trend, 599.9);
+  await clear();
+  respond = () => envelope([listed]);
+  await api.searchCards({ name: 'Charizard', scope: 'internet' });
+  assert.strictEqual((await db.get("SELECT price_trend FROM card_cache WHERE id = 'pokemontcgapi-bs-4'")).price_trend, 599.9, 'a later listing never erases a fetched price');
+  respond = () => { throw new Error('a priced, fresh row must not be fetched again'); };
+  await cardApi.hydrate('pokemontcgapi-bs-4');
+  assert.strictEqual((await api.getCardById('pokemontcgapi-bs-4')).price_trend, 599.9);
+  await db.run("UPDATE app_settings SET pokemon_provider = 'tcgdex'");
+}
+
 (async () => {
   await db.initDb();
   process.env.POKEMONTCGAPI_KEY = 'offline-fixture-credential';
@@ -327,6 +362,7 @@ async function pricesAndQuota() {
   await searches();
   await cacheAndErrors();
   await routes();
+  await creditDiscipline();
   await pricesAndQuota();
   console.log('pokemontcgapi.test.js: all assertions passed');
 })().then(() => process.exit(0)).catch(error => { console.error(error); process.exit(1); });
