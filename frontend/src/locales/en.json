@@ -373,6 +373,7 @@
   "loc.paneContainer": "Container",
   "loc.selectContainer": "Select Container...",
   "loc.createContainer": "Create Container",
+  "loc.importContainer": "Import ManaBox container",
   "loc.selectPrompt": "Select a container to view its compartments.",
   "loc.containerSettings": "Container Settings",
   "loc.saveRules": "Save Rules",
