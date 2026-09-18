@@ -27,6 +27,7 @@ async function testCheckedOutCardsAreUnavailable() {
     assert.strictEqual(res.statusCode, 200);
     assert.deepStrictEqual(res.body.cards[0].owned_qty, 2);
     assert.deepStrictEqual(res.body.cards[0].locked_qty, 2);
+    assert.strictEqual(res.body.cards[0].locked_decks, 'Goblin Stampede');
     assert.strictEqual(res.body.cards[0].quantity > res.body.cards[0].owned_qty - res.body.cards[0].locked_qty, true,
       'Testing must mark cards in checked-out Goblin Stampede unavailable');
   } finally {
