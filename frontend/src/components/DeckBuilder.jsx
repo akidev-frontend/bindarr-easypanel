@@ -1663,7 +1663,14 @@ function DeckBuilder({ showToast }) {
                                     <CardImage card={card} style={{ width: '32px', height: '44px', objectFit: 'cover', borderRadius: '2px', flexShrink: 0 }} />
                                     <div style={{ minWidth: 0, flex: 1, overflow: 'hidden' }}>
                                       <div style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--text-strong)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayName(card)}</div>
-                                      <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{card.set_name} • #{card.number}</div>
+                                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.7rem', color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                        <span>{card.set_name} • #{card.number}</span>
+                                        {card.quantity > (card.owned_qty || 0) && (
+                                          <span style={{ color: 'var(--accent-red)', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: '2px' }} title={t('deck.unavailableCopies', { count: card.quantity - (card.owned_qty || 0) })}>
+                                            <AlertTriangle size={11} /> {t('deck.unavailableCopies', { count: card.quantity - (card.owned_qty || 0) })}
+                                          </span>
+                                        )}
+                                      </div>
                                     </div>
                                   </div>
 
@@ -1704,6 +1711,11 @@ function DeckBuilder({ showToast }) {
                                     <span style={{ position: 'absolute', top: '4px', right: '4px', background: 'rgba(0,0,0,0.85)', color: 'var(--accent-yellow)', fontSize: '0.75rem', fontWeight: 800, padding: '1px 6px', borderRadius: '10px', border: '1px solid var(--accent-yellow)' }}>
                                       x{card.quantity}
                                     </span>
+                                    {card.quantity > (card.owned_qty || 0) && (
+                                      <span style={{ position: 'absolute', top: '4px', left: '4px', background: 'rgba(127,29,29,0.92)', color: '#fff', fontSize: '0.65rem', fontWeight: 800, padding: '2px 5px', borderRadius: '4px', display: 'inline-flex', alignItems: 'center', gap: '2px' }} title={t('deck.unavailableCopies', { count: card.quantity - (card.owned_qty || 0) })}>
+                                        <AlertTriangle size={10} /> {card.quantity - (card.owned_qty || 0)}
+                                      </span>
+                                    )}
                                   </div>
                                   <div style={{ padding: '4px', display: 'flex', justifyContent: 'center', background: 'rgba(0,0,0,0.5)' }}>
                                     <div style={{ display: 'flex', gap: '2px' }}>
