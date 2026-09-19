@@ -275,6 +275,7 @@
   "deck.sortNewest": "Newest First",
   "deck.sortOldest": "Oldest First",
   "deck.sortMostCards": "Most Cards",
+  "deck.sortByType": "Card type",
   "deck.gridView": "Grid view",
   "deck.tableView": "Table view",
   "deck.noMatches": "No decks match your filter",

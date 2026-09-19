@@ -39,6 +39,8 @@ const formatCardLocations = (locations) => locations.map(({ take, location_name,
   `${take > 1 ? `×${take} ` : ''}${location_name}${compartment_display ? ` · ${compartment_display}` : ''}`
 ).join(', ');
 
+const locationCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+
 function DeckBuilder({ showToast }) {
   const { t } = useT();
   const [decks, setDecks] = useState([]);
@@ -48,6 +50,7 @@ function DeckBuilder({ showToast }) {
   
   // Deck View & Display Modes
   const [cardDisplayMode, setCardDisplayMode] = useState('list'); // 'list' | 'grid'
+  const [deckCardSortBy, setDeckCardSortBy] = useState('type');
   const [previewCard, setPreviewCard] = useState(null);
 
   // Deck Creation States & Constants
@@ -737,6 +740,25 @@ function DeckBuilder({ showToast }) {
     : (deckGame === 'lorcana'
       ? ['Character', 'Action', 'Item', 'Location', 'Other']
       : ['Pokémon', 'Trainer', 'Energy', 'Other']);
+
+  const deckCardGroups = activeDeck && deckCardSortBy === 'location'
+    ? [{
+        name: t('collection.fLocation'),
+        cards: [...activeDeck.cards].sort((a, b) => {
+          const aLocation = deckCardLocations[a.id]?.[0];
+          const bLocation = deckCardLocations[b.id]?.[0];
+          if (!aLocation) return bLocation ? 1 : displayName(a).localeCompare(displayName(b));
+          if (!bLocation) return -1;
+          return locationCollator.compare(aLocation.location_name, bLocation.location_name)
+            || locationCollator.compare(aLocation.compartment_display || '', bLocation.compartment_display || '')
+            || (aLocation.position || 0) - (bLocation.position || 0)
+            || displayName(a).localeCompare(displayName(b));
+        })
+      }]
+    : GROUP_ORDER.map(name => ({
+        name,
+        cards: activeDeck?.cards.filter(card => cardGroup(card).toLowerCase() === name.toLowerCase()) || []
+      }));
 
   // --- CHART DATA GENERATION ---
   const getSupertypeChartData = () => {
@@ -1645,15 +1667,22 @@ function DeckBuilder({ showToast }) {
                         <LayoutGrid size={12} /> Grid
                       </button>
                     </div>
+                    <select
+                      className="select-control"
+                      value={deckCardSortBy}
+                      onChange={(e) => setDeckCardSortBy(e.target.value)}
+                      aria-label={t('collection.sortBy')}
+                      style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem', height: 'auto' }}
+                    >
+                      <option value="type">{t('deck.sortByType')}</option>
+                      <option value="location">{t('collection.fLocation')}</option>
+                    </select>
                   </div>
                   
                   {activeDeck.cards.length === 0 ? (
                     <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', textAlign: 'center', padding: '2rem 0' }}>{t('deck.emptyDeck')}</p>
                   ) : (
-                    GROUP_ORDER.map(supertype => {
-                      const list = activeDeck.cards.filter(c => {
-                        return cardGroup(c).toLowerCase() === supertype.toLowerCase();
-                      });
+                    deckCardGroups.map(({ name: supertype, cards: list }) => {
                       if (list.length === 0) return null;
                       const sum = list.reduce((total, c) => total + c.quantity, 0);
 
