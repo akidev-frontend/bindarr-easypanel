@@ -605,7 +605,7 @@ async function getCardsBySet(setId, apiKey = '') {
 // is already on the right cadence by construction).
 async function updateCollectionPrices(force = false) {
   if (!process.env.POKEMON_TCG_API_KEY) {
-    console.log('Skipping background price update: No global POKEMON_TCG_API_KEY configured to protect rate limits.');
+    console.log('Skipping legacy pokemontcg.io price sweep (no POKEMON_TCG_API_KEY); Pokémon TCGplayer prices come from TCGCSV and need no key.');
     return;
   }
   if (!force && !(await shouldSweepPrices('pokemon'))) {
