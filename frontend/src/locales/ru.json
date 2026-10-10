@@ -171,6 +171,7 @@
   "bulk.selectedCount.other": "Выбрано {count}",
   "bulk.setCondition": "Задать состояние…",
   "bulk.setPrinting": "Задать печать…",
+  "bulk.setLanguage": "Задать язык…",
   "bulk.unassignedPile": "Нераспределённая куча",
   "bulk.untrade": "Убрать с обмена",
   "card.certNumber": "№ сертификата",

@@ -1002,6 +1002,7 @@
   "bulk.moveToWishlist": "Move to Wishlist",
   "bulk.setCondition": "Set condition…",
   "bulk.setPrinting": "Set printing…",
+  "bulk.setLanguage": "Set language…",
   "bulk.moveToContainer": "Move to container…",
   "bulk.unassignedPile": "Unassigned Pile",
   "bulk.applyMove": "Apply Move",

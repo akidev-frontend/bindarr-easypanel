@@ -156,6 +156,7 @@
   "bulk.selectedCount.other": "已選 {count} 項",
   "bulk.setCondition": "設定品相…",
   "bulk.setPrinting": "設定印刷…",
+  "bulk.setLanguage": "設定語言…",
   "bulk.unassignedPile": "未指定的一疊",
   "bulk.untrade": "取消可交換",
   "card.certNumber": "證書號",

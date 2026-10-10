@@ -156,6 +156,7 @@
   "bulk.selectedCount.other": "{count} 件選択中",
   "bulk.setCondition": "状態を設定…",
   "bulk.setPrinting": "印刷を設定…",
+  "bulk.setLanguage": "言語を設定…",
   "bulk.unassignedPile": "未割り当ての山",
   "bulk.untrade": "トレード用を解除",
   "card.certNumber": "鑑定番号",
