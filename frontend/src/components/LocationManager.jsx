@@ -92,6 +92,8 @@ function LocationManager({ statsTrigger, onUpdate, showToast, selectedLocationId
   const [capacityDraft, setCapacityDraft] = useState('');
   const [countDraft, setCountDraft] = useState('');
   const [stackingDraft, setStackingDraft] = useState(false);
+  // Fixed slots by collector number: null = off, else rows of { set_id, start_slot, max_number }.
+  const [fixedDraft, setFixedDraft] = useState(null);
 
   const [inspectorCard, setInspectorCard] = useState(null);
 
@@ -1017,11 +1019,20 @@ function LocationManager({ statsTrigger, onUpdate, showToast, selectedLocationId
     const newSort = sortDraft.length > 0 ? JSON.stringify(sortDraft) : 'custom';
     const sortChanged = newSort !== selectedLoc.sort_order;
 
+    const fixedRows = (fixedDraft || []).filter(r => r.set_id).map(r => ({
+      set_id: r.set_id,
+      start_slot: parseInt(r.start_slot, 10) || 1,
+      max_number: r.max_number === '' || r.max_number == null ? null : parseInt(r.max_number, 10)
+    }));
+    const fixedSlots = fixedRows.length > 0 ? fixedRows : null;
+    const fixedChanged = JSON.stringify(fixedSlots) !== (selectedLoc.fixed_slots || 'null');
+
     const fields = {
       sort_order: newSort,
       rule_type: filterDraft.length > 0 ? 'compound' : 'any',
       rule_config: filterDraft.length > 0 ? JSON.stringify({ rules: filterDraft }) : null,
       allow_stacking: stackingDraft,
+      fixed_slots: fixedSlots,
     };
     const trimmedName = (nameDraft || '').trim();
     if (trimmedName && trimmedName !== selectedLoc.name) fields.name = trimmedName;
@@ -1065,7 +1076,7 @@ function LocationManager({ statsTrigger, onUpdate, showToast, selectedLocationId
 
     setShowRulesModal(false);
 
-    if (sortChanged && newSort !== 'custom' && (selectedLoc.total_cards || 0) > 0) {
+    if ((fixedChanged || (sortChanged && newSort !== 'custom')) && (selectedLoc.total_cards || 0) > 0) {
       if (window.confirm(t('loc.confirmResortAfterChange'))) {
         startResort(true);
       }
@@ -1197,6 +1208,63 @@ function LocationManager({ statsTrigger, onUpdate, showToast, selectedLocationId
                     {t('loc.allowStackingHint')}
                   </span>
                 </label>
+              </div>
+            )}
+
+            {isBinderType && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem' }}>
+                  <input
+                    type="checkbox"
+                    id="fixedSlotsOpt"
+                    checked={!!fixedDraft}
+                    onChange={(e) => setFixedDraft(e.target.checked ? [{ set_id: '', start_slot: 1, max_number: '' }] : null)}
+                    style={{ width: '16px', height: '16px', cursor: 'pointer', marginTop: '0.1rem', flexShrink: 0 }}
+                  />
+                  <label htmlFor="fixedSlotsOpt" style={{ cursor: 'pointer', margin: 0, fontSize: '0.75rem', color: 'var(--text-primary)', lineHeight: 1.35 }}>
+                    <strong>{t('loc.fixedSlots')}</strong>
+                    <span style={{ display: 'block', color: 'var(--text-muted)', fontSize: '0.7rem' }}>
+                      {t('loc.fixedSlotsHint')}
+                    </span>
+                  </label>
+                </div>
+                {fixedDraft && (
+                  <>
+                    {fixedDraft.map((row, i) => {
+                      const update = (patch) => setFixedDraft(fixedDraft.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+                      return (
+                        <div key={i} style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 4.5rem 4.5rem auto', gap: '0.35rem', alignItems: 'end' }}>
+                          <label style={{ display: 'flex', flexDirection: 'column', gap: '0.15rem', fontSize: '0.65rem', color: 'var(--text-secondary)', minWidth: 0 }}>
+                            {t('loc.fixedSlotsSet')}
+                            <select className="select-control" value={row.set_id} onChange={(e) => update({ set_id: e.target.value })} style={{ fontSize: '0.75rem', padding: '0.3rem' }}>
+                              <option value="">—</option>
+                              {/* A saved set the catalogue no longer lists still shows, rather than reading as unset. */}
+                              {row.set_id && !setsList.some(s => s.id === row.set_id) && <option value={row.set_id}>{row.set_id}</option>}
+                              {setsList
+                                .filter(s => !selectedLoc.game || selectedLoc.game === 'any' || s.game === selectedLoc.game || s.id === row.set_id)
+                                .map(s => <option key={s.id} value={s.id}>{s.name} ({s.ptcgo_code || s.id})</option>)}
+                            </select>
+                          </label>
+                          <label style={{ display: 'flex', flexDirection: 'column', gap: '0.15rem', fontSize: '0.65rem', color: 'var(--text-secondary)' }}>
+                            {t('loc.fixedSlotsStart')}
+                            <input type="number" min="1" className="input-control" value={row.start_slot} onChange={(e) => update({ start_slot: e.target.value })} style={{ fontSize: '0.75rem', padding: '0.3rem' }} />
+                          </label>
+                          <label style={{ display: 'flex', flexDirection: 'column', gap: '0.15rem', fontSize: '0.65rem', color: 'var(--text-secondary)' }}>
+                            {t('loc.fixedSlotsMax')}
+                            <input type="number" min="1" className="input-control" value={row.max_number} placeholder={t('loc.fixedSlotsNoMax')} onChange={(e) => update({ max_number: e.target.value })} style={{ fontSize: '0.75rem', padding: '0.3rem' }} />
+                          </label>
+                          <button type="button" className="btn btn-secondary btn-icon-only" onClick={() => setFixedDraft(fixedDraft.filter((_, j) => j !== i))} title={t('loc.fixedSlotsRemove')} aria-label={t('loc.fixedSlotsRemove')} style={{ width: '28px', height: '28px', padding: 0 }}>
+                            <X size={14} />
+                          </button>
+                        </div>
+                      );
+                    })}
+                    <button type="button" className="btn btn-secondary" onClick={() => setFixedDraft([...fixedDraft, { set_id: '', start_slot: 1, max_number: '' }])} style={{ alignSelf: 'flex-start', fontSize: '0.72rem', padding: '0.25rem 0.5rem' }}>
+                      <Plus size={12} /> {t('loc.fixedSlotsAdd')}
+                    </button>
+                    <span style={{ color: 'var(--text-muted)', fontSize: '0.68rem', lineHeight: 1.35 }}>{t('loc.fixedSlotsOverflow')}</span>
+                  </>
+                )}
               </div>
             )}
 
@@ -1401,6 +1469,9 @@ function LocationManager({ statsTrigger, onUpdate, showToast, selectedLocationId
 
                     setNameDraft(selectedLoc.name || '');
                     setStackingDraft(!!selectedLoc.allow_stacking);
+                    let fixed = null;
+                    try { fixed = selectedLoc.fixed_slots ? JSON.parse(selectedLoc.fixed_slots) : null; } catch { /* ignore */ }
+                    setFixedDraft(Array.isArray(fixed) && fixed.length > 0 ? fixed.map(r => ({ ...r, max_number: r.max_number ?? '' })) : null);
                     setCountDraft(String(compartments.length));
                     const caps = compartments.map(c => c.capacity);
                     const uniform = caps.length > 0 && caps.every(c => c === caps[0]);
