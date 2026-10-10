@@ -100,10 +100,10 @@ async function resolveCompartmentAndPosition(arg1, locationId, cardId, userId) {
     return { compartment_id: null, position: position !== undefined ? position : 0 };
   }
 
-  const location = await db.get(`SELECT id, name, type, sort_order, foil_sorting, rule_type, rule_config, game, allow_stacking, user_id FROM locations WHERE id = ? AND user_id = ?`, [locId, uId]);
+  const location = await db.get(`SELECT id, name, type, sort_order, foil_sorting, rule_type, rule_config, game, allow_stacking, fixed_slots, user_id FROM locations WHERE id = ? AND user_id = ?`, [locId, uId]);
   if (!location) return { compartment_id: null, position: 0 };
 
-  let cardMetadata = await dbClient.get(`SELECT name, set_name, number, types, subtypes, price_trend, price_normal, price_holofoil, price_reverse_holofoil, supertype, rarity, game, cmc, color_identity FROM card_cache WHERE id = ?`, [cId]);
+  let cardMetadata = await dbClient.get(`SELECT name, set_id, set_name, number, types, subtypes, price_trend, price_normal, price_holofoil, price_reverse_holofoil, supertype, rarity, game, cmc, color_identity FROM card_cache WHERE id = ?`, [cId]);
   if (!cardMetadata) cardMetadata = { name: cId || '', types: [] };
   // card_cache has no id column selected above, and a stacking container matches
   // a copy against its twin by card id — so carry it on explicitly.

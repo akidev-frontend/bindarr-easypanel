@@ -783,6 +783,12 @@ async function initDb() {
     await run(`ALTER TABLE locations ADD COLUMN allow_stacking INTEGER NOT NULL DEFAULT 0`);
   }
 
+  // Fixed slots: JSON [{ set_id, start_slot, max_number }] pinning a set's cards
+  // to the binder pocket their collector number names. NULL (the default) is off.
+  if (!locationsStackCols.some(c => c.name === 'fixed_slots')) {
+    await run(`ALTER TABLE locations ADD COLUMN fixed_slots TEXT`);
+  }
+
   await splitStackedRows();
 
   // --- PERFORMANCE INDEXES ---
