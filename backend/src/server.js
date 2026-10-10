@@ -282,6 +282,12 @@ db.initDb()
       const warm = ['mtg', 'pokemon', 'lorcana'].filter(g => cvScan.isBuilt(g));
       for (const g of warm) {
         cvScan.load(g).catch(err => console.warn(`cvScan ${g} warm-up failed:`, err.message));
+        // Locally built non-English catalogs too (e.g. German Pokémon, #80): they
+        // were only loaded by the first scan in that language, which then paid the
+        // whole catalog read.
+        for (const lang of cvScan.builtLangs(g).filter(l => l !== 'English')) {
+          cvScan.load(g, lang).catch(err => console.warn(`cvScan ${g} ${lang} warm-up failed:`, err.message));
+        }
       }
       // There is no second matcher to fall back to, so say what is missing. The
       // models alone identify nothing.
