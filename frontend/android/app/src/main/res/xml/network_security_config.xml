@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Trust user-installed CAs as well as system ones, so servers behind a private CA
+     work (Android 7+ ignores user CAs by default). Cleartext stays off, matching the
+     targetSdk 28+ default the app already had. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

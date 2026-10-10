@@ -191,6 +191,11 @@ The first visit in a browser asks you to create the owner account. The SQLite fi
 
 `Bindarr-Android.apk` is attached to each release (allow "install from unknown sources"). iOS goes out through TestFlight. Both talk to a Bindarr server, so install one of the above first and point the app at it.
 
+If your server's certificate comes from your own (private) CA, install that CA certificate on the phone first:
+
+- **Android:** Settings → Security → Encryption & credentials → Install a certificate → CA certificate. The app trusts user-installed CAs.
+- **iOS:** install the CA profile, then turn on full trust for it under Settings → General → About → Certificate Trust Settings.
+
 ---
 
 ## Pokémon data providers
