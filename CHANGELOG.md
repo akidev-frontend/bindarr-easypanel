@@ -6,6 +6,25 @@ release also carries fuller notes on its
 
 ## [Unreleased]
 
+## [1.8.7] - 2026-10-11
+
+### Added
+- **Change a card's printing after saving.** The card inspector has a "Change printing" action that lists the other printings of the same card, the same picker the scanner uses, so a copy filed under the wrong set can be corrected without deleting and re-adding it. The copy keeps its location, slot, condition, language, notes and purchase price; the switch is limited to the same game and the same card. Thanks [@mconway](https://github.com/mconway) ([#79](https://github.com/thenotoriousJeremy/bindarr/issues/79), [#83](https://github.com/thenotoriousJeremy/bindarr/pull/83)).
+- **Fixed slots by collector number for binders.** A binder can pin each card of a set to its own pocket (card #23 goes in slot 23, gaps left for missing cards), with a configurable start slot per set so two sets can share a binder and an optional maximum number so special treatments go elsewhere. Cards without a fixed slot fill the pages after the reserved range in the binder's normal sort order. Off by default. Thanks [@mheaysman](https://github.com/mheaysman) ([#74](https://github.com/thenotoriousJeremy/bindarr/issues/74), [#86](https://github.com/thenotoriousJeremy/bindarr/pull/86)).
+- **Bulk "Set language…"** in the collection view, next to "Set printing…", with the same behavior as changing one card's language ([#73](https://github.com/thenotoriousJeremy/bindarr/issues/73), [#84](https://github.com/thenotoriousJeremy/bindarr/pull/84)).
+
+### Fixed
+- **The scanner works in the mobile app again, and is faster everywhere.** The app's detection worker asked its own bundled origin for the corner model instead of your server, so it silently fell back to the slow contour detector and retried the download every frame. The model is now fetched from the server once and cached on the device. The live loop draws the camera frame straight into the model input, is paced by `requestVideoFrameCallback`, and stops re-rendering when nothing changed. The fallback order is single-thread wasm, then the contour detector, then a manual Capture button that lets the server dewarp the frame, and the debug readout names whichever one is running. Non-English scan catalogs now load at startup instead of on the first scan. Thanks [@Doxlike](https://github.com/Doxlike) ([#80](https://github.com/thenotoriousJeremy/bindarr/issues/80), [#87](https://github.com/thenotoriousJeremy/bindarr/pull/87)).
+- **CSV and JSON imports look cards up instead of saving placeholders.** Rows were stored as blank "Imported Set" entries with no art and no price, and never resolved later. Each row is now matched by card id, or by set and collector number through the configured provider (Pokémon via the set catalogue, MTG through Scryfall in batches of 75, Lorcana through Lorcast). Common column names such as `Set`, `Number` and `Collector Number` are recognized. Rows that cannot be matched are skipped and listed in the import result. Thanks [@gauntfield](https://github.com/gauntfield) ([#75](https://github.com/thenotoriousJeremy/bindarr/issues/75), [#85](https://github.com/thenotoriousJeremy/bindarr/pull/85)).
+- **Non-English Magic cards are no longer valued at $0.** When Scryfall has no price for a localized printing, it takes the English printing's price (same set and collector number) and keeps its own name and art. Switching a card's language back to English now restores the English printing. Thanks [@Trejvic](https://github.com/Trejvic) ([#73](https://github.com/thenotoriousJeremy/bindarr/issues/73), [#84](https://github.com/thenotoriousJeremy/bindarr/pull/84)).
+- **OIDC errors name the real cause.** "fetch failed" now carries the underlying code (for example `UNABLE_TO_VERIFY_LEAF_SIGNATURE` or `ECONNREFUSED`) in the log and the error response, with a hint when it is a certificate problem. Thanks [@morgan-pup](https://github.com/morgan-pup) ([#77](https://github.com/thenotoriousJeremy/bindarr/issues/77), [#82](https://github.com/thenotoriousJeremy/bindarr/pull/82)).
+- **The Android app trusts user-installed CA certificates**, so a server behind a private root CA no longer fails with "Trust Anchor for certification path not found". Thanks [@morgan-pup](https://github.com/morgan-pup) ([#78](https://github.com/thenotoriousJeremy/bindarr/issues/78), [#81](https://github.com/thenotoriousJeremy/bindarr/pull/81)).
+- **The legacy pokemontcg.io price-sweep log line no longer implies a paid key is needed.** Pokémon TCGplayer prices come from TCGCSV, which needs no key ([#75](https://github.com/thenotoriousJeremy/bindarr/issues/75)).
+
+### Documentation
+- `NODE_EXTRA_CA_CERTS` for OIDC providers behind a private CA, with a docker-compose example and the `/api/auth/oidc/callback` redirect path (README "SSO with a private CA", `.env.example`).
+- Installing a private CA on Android and iOS (README "Mobile apps").
+
 ## [1.8.6] - 2026-09-30
 
 ### Added
