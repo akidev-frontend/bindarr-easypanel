@@ -46,10 +46,14 @@ process.env.DB_PATH = require('path').join(
   assert.match(ja.image_url, /ja\.jpg$/, 'art must be the Japanese printing');
   assert.strictEqual(requested[0], '/cards/neo/1/ja', 'asks Scryfall by set+number+lang');
 
-  // English is already what the catalog returns: no request, nothing to switch to.
+  // English resolves like any other language, or a copy set back to English stays
+  // on the localized printing (#73). The Japanese lookup above already cached it,
+  // as the price to fall back on, so it costs no request.
   const before = requested.length;
-  assert.strictEqual(await scryfall.getPrintingInLang('neo', '1', 'English'), null);
-  assert.strictEqual(requested.length, before, 'English must not cost a request');
+  const english = await scryfall.getPrintingInLang('neo', '1', 'English');
+  assert.strictEqual(english && english.language, 'English', 'English printing resolves');
+  assert.strictEqual(requested.length, before, 'served from card_cache');
+  assert.ok(requested.includes('/cards/neo/1/en'), 'the unpriced Japanese printing fetched its English sibling');
 
   // Never printed in that language: null, so the caller keeps the English card
   // rather than showing nothing.
@@ -174,6 +178,6 @@ process.env.DB_PATH = require('path').join(
   assert.strictEqual(en.candidates[0].card.langFallback, undefined, 'an English scan must not be marked');
   assert.strictEqual(koAsked.length, 1, 'an English scan must not consult TCGdex');
 
-  console.log('scanlang.test.js: all 25 assertions passed');
+  console.log('scanlang.test.js: all 26 assertions passed');
   process.exit(0);
 })().catch((e) => { console.error(e); process.exit(1); });
