@@ -41,8 +41,9 @@ router.get('/oidc/login', authLimiter, async (req, res) => {
     const authUrl = await oidc.buildAuthorizationUrl(req);
     res.redirect(302, authUrl);
   } catch (error) {
-    console.error('OIDC login initiation failed:', error.message);
-    res.status(500).json({ error: 'Failed to initiate OIDC login', message: error.message });
+    const { message, log } = oidc.describeFetchError(error);
+    console.error('OIDC login initiation failed:', log);
+    res.status(500).json({ error: 'Failed to initiate OIDC login', message });
   }
 });
 
@@ -157,8 +158,9 @@ router.get('/oidc/callback', authLimiter, async (req, res) => {
     const token = await generateSession(user.id);
     return frontendRedirect({ oidc_token: token });
   } catch (err) {
-    console.error('OIDC callback processing failed:', err.message);
-    return frontendRedirect({ oidc_error: err.message });
+    const { message, log } = oidc.describeFetchError(err);
+    console.error('OIDC callback processing failed:', log);
+    return frontendRedirect({ oidc_error: message });
   }
 });
 

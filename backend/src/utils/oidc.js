@@ -181,6 +181,24 @@ function getTokenEndpointAuthMethod() {
   return method;
 }
 
+// Node's fetch (undici) rejects with a bare "fetch failed" and keeps the real
+// reason -- ENOTFOUND, ECONNREFUSED, a certificate error -- in err.cause.
+// `message` appends only the cause code, short enough to show the client; `log`
+// adds the cause's own message for the server log.
+function describeFetchError(err) {
+  const message = (err && err.message) || String(err);
+  const cause = err && err.cause;
+  if (!cause) return { message, log: message };
+  const code = cause.code || cause.name || 'unknown';
+  let log = `${message}: ${code}${cause.message ? ` - ${cause.message}` : ''}`;
+  // Node trusts its bundled CA list, not the OS store, so adding a root CA to
+  // the container's system certificates changes nothing.
+  if (/CERT|SELF_SIGNED|UNABLE_TO_/.test(code)) {
+    log += ' (if the identity provider uses a private CA, set NODE_EXTRA_CA_CERTS to its PEM file)';
+  }
+  return { message: `${message} (${code})`, log };
+}
+
 /**
  * Fetch and cache OpenID Connect Discovery document (.well-known/openid-configuration).
  */
@@ -418,7 +436,7 @@ async function exchangeCode({ code, stateToken, req }) {
         userInfoClaims = await userinfoRes.json();
       }
     } catch (err) {
-      console.warn('OIDC userinfo fetch failed, falling back to ID token claims:', err.message);
+      console.warn('OIDC userinfo fetch failed, falling back to ID token claims:', describeFetchError(err).log);
     }
   }
 
@@ -483,5 +501,6 @@ module.exports = {
   exchangeCode,
   extractUserIdentity,
   resolveRedirectUri,
+  describeFetchError,
   _resetDiscoveryCache: () => { discoveryCache = null; discoveryExpiresAt = 0; }
 };

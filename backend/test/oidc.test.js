@@ -248,12 +248,36 @@ async function testMockOidcFlow() {
   }
 }
 
+async function testDescribeFetchError() {
+  const plain = oidc.describeFetchError(new Error('OIDC_CLIENT_ID is not configured'));
+  assert.deepStrictEqual(plain, { message: 'OIDC_CLIENT_ID is not configured', log: 'OIDC_CLIENT_ID is not configured' });
+
+  // A real undici failure: a port just released by a closed server, so the cause is ECONNREFUSED.
+  const probe = http.createServer();
+  await new Promise(resolve => probe.listen(0, '127.0.0.1', resolve));
+  const { port } = probe.address();
+  await new Promise(resolve => probe.close(resolve));
+  const refused = await fetch(`http://127.0.0.1:${port}/`).catch(err => err);
+  const described = oidc.describeFetchError(refused);
+  assert.strictEqual(described.message, 'fetch failed (ECONNREFUSED)');
+  assert(described.log.startsWith('fetch failed: ECONNREFUSED'), described.log);
+  assert(!described.log.includes('NODE_EXTRA_CA_CERTS'), 'no CA hint for a refused connection');
+
+  const cause = Object.assign(new Error('unable to verify the first certificate'), { code: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' });
+  const tls = oidc.describeFetchError(new TypeError('fetch failed', { cause }));
+  assert.strictEqual(tls.message, 'fetch failed (UNABLE_TO_VERIFY_LEAF_SIGNATURE)');
+  assert(tls.log.includes('unable to verify the first certificate'), tls.log);
+  assert(tls.log.includes('NODE_EXTRA_CA_CERTS'), 'certificate failures must point at NODE_EXTRA_CA_CERTS');
+  console.log('PASS: describeFetchError surfaces fetch failure causes');
+}
+
 async function main() {
   testPkce();
   testStateTokens();
   testExtractUserIdentity();
   testIssuerTransport();
   testIdTokenValidation();
+  await testDescribeFetchError();
   await testMockOidcFlow();
   console.log('PASS: oidc.test.js');
 }

@@ -167,11 +167,28 @@ All optional.
 | `OIDC_AUTO_PROVISION` | `true` | Automatically create a Bindarr member account on first successful SSO login. |
 | `OIDC_ALLOW_USERNAME_LINK` | `false` | Let an SSO identity attach itself to an **existing** Bindarr account that has the same username. Needed to move accounts created before SSO onto it. **Only turn this on if your users cannot choose their own username at the identity provider** — if they can, someone setting theirs to `admin` takes the owner account on their first login. With it off, an SSO login whose username is already taken is refused rather than silently given a second, empty account. |
 | `OIDC_TOKEN_ENDPOINT_AUTH_METHOD` | `client_secret_basic` | Token endpoint client authentication method. Set to client_secret_basic or client_secret_post. |
+| `NODE_EXTRA_CA_CERTS` | — | PEM file of a private root CA to trust, for an identity provider whose certificate it signed. See [SSO with a private CA](#sso-with-a-private-ca). |
 | `TRUST_PROXY` | — | Number of proxy hops (usually `1`) when a reverse proxy terminates TLS, so rate limiting sees the real client IP. |
 | `CV_MODEL_DIR` | `/app/database/models` in the image | Where the scan models and catalogs live. Must be on persistent storage, or an image update discards every catalog you built. |
 | `CV_SCAN_GAP` | `0.10` | How far a match must stand above its runner-ups before it counts as an answer rather than "this card is not in the catalog". Lower accepts more guesses. |
 | `BACKUP_INTERVAL_HOURS` | `24` | Automatic database snapshot interval. `0` disables. |
 | `BACKUP_KEEP_LAST` | `10` | How many snapshots to retain. |
+
+#### SSO with a private CA
+
+Register `<PUBLIC_BASE_URL>/api/auth/oidc/callback` as the redirect URI at your identity provider (e.g. `https://cards.example.com/api/auth/oidc/callback`). Without `PUBLIC_BASE_URL` it is built from the request's host; `OIDC_REDIRECT_URI` overrides it outright.
+
+If the provider's certificate is signed by your own root CA, SSO login fails with `fetch failed` and the container log names a certificate error such as `UNABLE_TO_VERIFY_LEAF_SIGNATURE` or `SELF_SIGNED_CERT_IN_CHAIN`. Node ships its own CA list and does not read the operating system's certificate store, so adding the CA to the container's system store does not help. Mount the CA's PEM file and point `NODE_EXTRA_CA_CERTS` at it:
+
+```yaml
+    environment:
+      - NODE_EXTRA_CA_CERTS=/certs/root-ca.pem
+    volumes:
+      - bindarr-data:/app/database
+      - ./root-ca.pem:/certs/root-ca.pem:ro
+```
+
+Node reads this variable once at startup, so set it in the container or process environment. A `.env` file read by the server does not work for it.
 
 `GET /api/health` returns `200 {"status":"ok"}` with no auth and backs the image's `HEALTHCHECK`.
 
