@@ -911,7 +911,7 @@ router.put('/collection/:id', async (req, res) => {
   const {
     quantity, condition, printing, language, purchase_price,
     location_id, compartment_id, list_type, is_trade, favorite, game, notes,
-    grader, grade, cert_number, market_value
+    grader, grade, cert_number, market_value, card_id
   } = req.body;
 
   try {
@@ -972,6 +972,34 @@ router.put('/collection/:id', async (req, res) => {
         }
       }
     }
+    // Re-file this copy under another printing of the SAME card: a scan or search
+    // that found the right card in the wrong set. Same game and same name is the
+    // whole invariant — anything else is a different card, which is a delete and
+    // an add, not an edit. No merge with copies already on that printing: rows are
+    // per copy, and identical rows are summed into one stack by every view, the
+    // same way a language switch or a second add lands. Pushed after the language
+    // block so an explicit printing wins over the implicit one (rightmost SET wins).
+    let swappedCard = null;
+    if (card_id !== undefined && card_id !== entry.card_id) {
+      const target = String(card_id || '');
+      const current = await db.get(`SELECT * FROM card_cache WHERE id = ?`, [entry.card_id]);
+      // Same lookup as an add: fill a thin cached row, else fetch and cache it.
+      if (target) await cardApi.hydrate(target);
+      let next = target && (await db.get(`SELECT * FROM card_cache WHERE id = ?`, [target]));
+      if (target && !next) next = await cardApi.getCardById(target, { tcgApiKey: req.user.tcg_api_key });
+      if (!next) return res.status(404).json({ error: `Card ID ${target} not found.` });
+      if ((next.game || cardApi.gameOf(next.id)) !== (entry.game || cardApi.gameOf(entry.card_id))) {
+        return res.status(400).json({ error: 'A printing can only be changed to one from the same game.' });
+      }
+      next = await tcgdexApi.learnEnglishName(next);
+      const names = (c) => [c && c.name, c && c.printed_name].filter(Boolean).map(n => String(n).trim().toLowerCase());
+      if (current && !names(next).some(n => names(current).includes(n))) {
+        return res.status(400).json({ error: `${next.name} is a different card. Pick a printing of ${current.name}.` });
+      }
+      updates.push('card_id = ?');
+      params.push(next.id);
+      swappedCard = next;
+    }
     if (purchase_price !== undefined) { updates.push('purchase_price = ?'); params.push(purchase_price); }
     if (isMoving || compartment_id !== undefined) {
       updates.push('location_id = ?', 'compartment_id = ?', 'position = ?');
@@ -1030,6 +1058,14 @@ router.put('/collection/:id', async (req, res) => {
     if (isMoving && entry.compartment_id && entry.compartment_id !== finalCompartmentId) {
       const oldLoc = await db.get(`SELECT sort_order, foil_sorting FROM locations WHERE id = ? AND user_id = ?`, [entry.location_id, req.user.id]);
       if (oldLoc) await rebalanceCompartmentByScheme(db, entry.compartment_id, oldLoc.sort_order, oldLoc.foil_sorting);
+    }
+    // Same slot, new set and number: a binder sorted by set has to re-sort around it.
+    if (swappedCard) {
+      await recordPrice(swappedCard.id, swappedCard.price_trend);
+      if (!isMoving && entry.compartment_id && entry.location_id) {
+        const loc = await db.get(`SELECT sort_order, foil_sorting FROM locations WHERE id = ? AND user_id = ?`, [entry.location_id, req.user.id]);
+        if (loc) await rebalanceCompartmentByScheme(db, entry.compartment_id, loc.sort_order, loc.foil_sorting);
+      }
     }
 
     // Quantity is absolute — it is how many copies the user says they own, and

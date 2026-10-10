@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
-import { X, MapPin, Trash2, Star, Maximize2, ExternalLink, Search } from 'lucide-react';
+import { X, MapPin, Trash2, Star, Maximize2, ExternalLink, Search, Layers, RefreshCw } from 'lucide-react';
 import { getCardDisplayName } from '../utils/langHelper';
-import { translatedName, setCode, isEnglish } from '../utils/languages';
+import { translatedName, setCode, isEnglish, langCode } from '../utils/languages';
 import { formatPrice, priceText } from '../utils/formatPrice';
 import { resolveCardPrice } from '../utils/resolveCardPrice';
 import { tcgplayerUrl, cardmarketUrl, searchUrl, priceSource, noLinkReason } from '../utils/marketplaceLinks';
@@ -60,6 +60,9 @@ function CardInspectorModal({ card, onClose, onUpdate, onDeleted, showToast, onV
   const [localizedCard, setLocalizedCard] = useState(null);
   const [prevTargetId, setPrevTargetId] = useState(card?.entry_id || card?.id || null);
   const [isFullScreen, setIsFullScreen] = useState(false);
+  // Other printings of this card, for re-filing a copy saved under the wrong set.
+  const [printings, setPrintings] = useState(null);
+  const [findingPrintings, setFindingPrintings] = useState(false);
   const hasToggledRef = useRef(false);
 
   useBackGuard(isFullScreen, () => setIsFullScreen(false));
@@ -82,6 +85,7 @@ function CardInspectorModal({ card, onClose, onUpdate, onDeleted, showToast, onV
   useEffect(() => {
     if (!card) return;
     setLocalizedCard(null);
+    setPrintings(null);
     hasToggledRef.current = false;
     setMode(startInEdit ? 'edit' : 'view');
     setQ(card.quantity ?? 1);
@@ -291,6 +295,58 @@ function CardInspectorModal({ card, onClose, onUpdate, onDeleted, showToast, onV
     } catch (err) {
       console.error(err);
       showToast && showToast(t('inspector.errAddDeckGeneric'));
+    }
+  };
+
+  // "Change printing" after the fact: the same all-printings search the scanner's
+  // picker runs, narrowed to this card's own name because the server only accepts
+  // another printing of the same card.
+  const sameName = (a, b) => {
+    const names = (c) => [c.name, c.printed_name].filter(Boolean).map(n => String(n).trim().toLowerCase());
+    return names(a).some(n => names(b).includes(n));
+  };
+  const findOtherPrintings = async () => {
+    if (findingPrintings) return;
+    setFindingPrintings(true);
+    try {
+      const p = new URLSearchParams({
+        game: activeCard.game || 'pokemon',
+        lang: langCode(activeCard.language || 'English'),
+        name: activeCard.name,
+        prints: '1',
+        scope: 'internet',
+      });
+      const res = await fetch(`/api/search?${p.toString()}`);
+      const found = (res.ok ? await res.json() : [])
+        .filter(c => c.id !== activeCard.card_id && sameName(c, activeCard));
+      if (found.length === 0) showToast && showToast(t('scan.noOtherPrintings'));
+      setPrintings(found.length ? found : null);
+    } catch {
+      showToast && showToast(t('scan.noOtherPrintings'));
+    } finally {
+      setFindingPrintings(false);
+    }
+  };
+
+  const handleChangePrinting = async (picked) => {
+    if (!targetEntryId) return;
+    try {
+      const res = await fetch(`/api/collection/${targetEntryId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ card_id: picked.id })
+      });
+      if (res.ok) {
+        showToast && showToast(t('inspector.entryUpdated'));
+        onUpdate && onUpdate();
+        onClose();
+      } else {
+        const body = await res.json().catch(() => null);
+        showToast && showToast(body?.error || t('inspector.errUpdate'));
+      }
+    } catch (err) {
+      console.error(err);
+      showToast && showToast(t('inspector.errUpdateGeneric'));
     }
   };
 
@@ -656,6 +712,41 @@ function CardInspectorModal({ card, onClose, onUpdate, onDeleted, showToast, onV
                 <div><span style={{ color: 'var(--text-muted)' }}>{t('inspector.specLanguage')}</span> <span style={{ color: 'var(--text-strong)', fontWeight: 600 }}>{activeCard.language}</span></div>
                 <div><span style={{ color: 'var(--text-muted)' }}>{t('inspector.specSupertype')}</span> <span style={{ color: 'var(--text-strong)', fontWeight: 600 }}>{activeCard.supertype}</span></div>
               </div>
+
+              {/* Right card, wrong set: re-file this copy under another printing. */}
+              {printings ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                    {t('scan.allPrintings', { n: printings.length, name: activeCard.name })}
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(90px, 1fr))', gap: '0.6rem', maxHeight: '280px', overflowY: 'auto', padding: '0.25rem' }}>
+                    {printings.map(p => (
+                      <div key={p.id} className="tcg-card" onClick={() => handleChangePrinting(p)} style={{ cursor: 'pointer' }}>
+                        <div className="tcg-card-inner" style={{ border: '1px solid var(--border-glass-hover)' }}>
+                          <CardImage card={p} className="tcg-card-image" />
+                        </div>
+                        <div className="tcg-card-info" style={{ textAlign: 'center', marginTop: '0.35rem' }}>
+                          <div style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-primary)' }}>#{p.number}</div>
+                          <div style={{ fontSize: '0.65rem', color: 'var(--text-secondary)' }}>{p.set_name}</div>
+                          <div style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--accent-yellow)' }}>{priceText(p.price_trend, p.price_currency)}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <button type="button" className="btn btn-secondary btn-sm" onClick={() => setPrintings(null)}>{t('common.cancel')}</button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={findOtherPrintings}
+                  disabled={findingPrintings}
+                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.35rem' }}
+                >
+                  {findingPrintings ? <RefreshCw size={14} className="spin" /> : <Layers size={14} />}
+                  <span>{findingPrintings ? t('scan.fetchingCandidates') : t('scan.changePrinting')}</span>
+                </button>
+              )}
 
               {/* Storage Container details (clickable to view in storage) */}
               {activeCard.list_type !== 'wishlist' && (
