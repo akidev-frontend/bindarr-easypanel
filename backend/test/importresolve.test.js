@@ -17,6 +17,8 @@ process.env.DEFAULT_ADMIN_PASSWORD = 'test-admin-password';
 const axios = require('axios');
 const db = require('../src/db');
 const tcgdexApi = require('../src/tcgdexApi');
+const scryfallApi = require('../src/scryfallApi');
+const lorcastApi = require('../src/lorcastApi');
 const importRouter = require('../src/routes/importExport');
 
 axios.defaults.adapter = async (config) => { throw new Error(`Unexpected network request: ${config.url}`); };
@@ -40,6 +42,31 @@ tcgdexApi.client.defaults.adapter = async (config) => {
   const err = new Error('Not found');
   err.response = { status: 404 };
   throw err;
+};
+
+// Scryfall's /cards/collection: knows MH3 #1 only.
+const BREAKER = '11111111-2222-3333-4444-555555555555';
+const scryfallBatches = [];
+scryfallApi.client.defaults.adapter = async (config) => {
+  const { identifiers } = JSON.parse(config.data);
+  scryfallBatches.push(identifiers);
+  const data = identifiers.filter(i => i.set === 'mh3' && i.collector_number === '1').map(() => ({
+    id: BREAKER, name: 'Breaker of Creation', set: 'mh3', set_name: 'Modern Horizons 3', collector_number: '1',
+    rarity: 'mythic', prices: { usd: '2.50' }, image_uris: { normal: 'https://cards.scryfall.io/normal/front/breaker.jpg' },
+  }));
+  const not_found = identifiers.filter(i => !(i.set === 'mh3' && i.collector_number === '1'));
+  return { data: { object: 'list', data, not_found }, status: 200, statusText: 'OK', headers: {}, config };
+};
+
+// Lorcast search: set 1, number 1 only.
+lorcastApi.client.defaults.adapter = async (config) => {
+  const q = (config.params && config.params.q) || '';
+  const results = q.includes('number:1') && q.includes('set:1') && !q.includes('number:10') ? [{
+    id: 'crd_ariel', name: 'Ariel', version: 'On Human Legs', collector_number: '1', rarity: 'Uncommon',
+    set: { code: '1', name: 'The First Chapter' }, prices: { usd: '0.40' },
+    image_uris: { digital: { normal: 'https://cards.lorcast.io/ariel.avif' } },
+  }] : [];
+  return { data: { results }, status: 200, statusText: 'OK', headers: {}, config };
 };
 
 const handler = importRouter.stack.find(layer => layer.route?.path === '/import').route.stack[0].handle;
@@ -99,6 +126,26 @@ async function main() {
 
   assert.strictEqual((await db.get(`SELECT COUNT(*) n FROM collection`)).n, 3);
   assert.ok(requests.includes('/en/cards/sv01-001'));
+
+  // MTG and Lorcana exports give set code + collector number, no card id. MTG
+  // goes to Scryfall in one batch; the zero-padded 001 must still pair with #1.
+  const other = await importCsv([
+    'Name,Set Code,Card Number,Quantity,Game',
+    'Breaker of Creation,MH3,001,2,mtg',
+    'Not A Card,MH3,999,1,mtg',
+    'Ariel - On Human Legs,1,1,1,lorcana',
+    'Nobody,1,10,1,lorcana',
+  ].join('\n'));
+  assert.strictEqual(other.statusCode, 200, JSON.stringify(other.body));
+  assert.strictEqual(other.body.count, 3);
+  assert.deepStrictEqual(other.body.unresolved.map(r => r.name), ['Not A Card', 'Nobody']);
+  assert.strictEqual(scryfallBatches.length, 1, 'MTG rows are asked for in one batch');
+  assert.strictEqual(scryfallBatches[0].length, 2);
+  const art = await db.all(`
+    SELECT DISTINCT c.card_id, cc.image_url FROM collection c JOIN card_cache cc ON cc.id = c.card_id
+     WHERE c.game IN ('mtg', 'lorcana') ORDER BY c.card_id`);
+  assert.deepStrictEqual(art.map(r => r.card_id), ['lorcana-crd_ariel', `mtg-${BREAKER}`]);
+  for (const r of art) assert.ok(r.image_url.startsWith('https://'), `${r.card_id} carries its art`);
 }
 
 main()

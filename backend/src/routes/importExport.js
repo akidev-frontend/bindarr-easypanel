@@ -3,6 +3,7 @@ const router = express.Router();
 const db = require('../db');
 const { parseThirdPartyCSV, parseManaboxText } = require('../utils/csvMappers');
 const scryfallApi = require('../scryfallApi');
+const lorcastApi = require('../lorcastApi');
 const { generateExportCSV } = require('../utils/csvExporters');
 const { resolveCardPrice } = require('../utils/priceHelpers');
 const { isBinderType } = require('../utils/compartmentSort');
@@ -30,11 +31,16 @@ async function resolveImportedCard(item, user, setsFor) {
     if (card) return card.id;
   }
 
-  // ponytail: Pokémon only — ManaBox has its own Scryfall path above; an MTG or
-  // Lorcana CSV without card ids is reported as unresolved rather than guessed.
   const number = String(item.collector_number || item.number || '').split('/')[0].trim();
   const set = item.set_code || item.set_id || item.set_name;
-  if (game !== 'pokemon' || !number || !set) return null;
+  // MTG set+number rows were already asked of Scryfall in one batch (see the
+  // route); one that reaches here is a printing Scryfall does not have.
+  if (game === 'mtg' || !number || !set) return null;
+
+  if (game === 'lorcana') {
+    const { cards } = await lorcastApi.searchCards({ set, number, limit: 250 });
+    return pick(cards, item.name);
+  }
 
   const lang = languages.toCode(item.language || 'English');
   const api = await pokemonProvider.apiFor(lang);
@@ -44,10 +50,20 @@ async function resolveImportedCard(item, user, setsFor) {
   const setRow = (await setsFor(api, lang))(set, item.set_name || set);
   if (!setRow) return null;
   const { cards } = await api.searchCards({ set: setRow.id, number, lang, apiKey: user.tcg_api_key, limit: 250 });
-  const named = (cards || []).filter(c => normName(c.name) === normName(item.name));
-  const card = named.length === 1 ? named[0] : (cards && cards.length === 1 ? cards[0] : null);
+  return pick(cards, item.name);
+}
+
+// The one card a set+number search means: the only result, or the only one with
+// the row's name. Anything else is ambiguous and is not guessed at.
+function pick(cards = [], name) {
+  const named = cards.filter(c => normName(c.name) === normName(name));
+  const card = named.length === 1 ? named[0] : (cards.length === 1 ? cards[0] : null);
   return card ? card.id : null;
 }
+
+// Rows that name the same printing are resolved once.
+const importKey = (item) => JSON.stringify([item.card_id || item.id, item.game, item.set_code || item.set_id,
+  item.set_name, item.collector_number || item.number, item.language, item.name]);
 
 // Export endpoint
 router.get('/export', async (req, res) => {
@@ -226,11 +242,34 @@ router.post('/import', async (req, res) => {
       return setMatchers.get(lang);
     };
     const resolved = new Map();
+
+    // MTG set+number rows (Moxfield, Deckbox, Archidekt exports) go to Scryfall's
+    // collection endpoint 75 at a time, so a large file costs a few requests
+    // rather than one per row. Rows already cached (a ManaBox import, a backup)
+    // are skipped; a failure leaves the rows to be reported as unresolved.
+    const mtgRows = [];
+    for (const item of rawItems) {
+      const id = item.card_id || item.id;
+      const set = item.set_code || item.set_id;
+      const number = String(item.collector_number || item.number || '').trim().replace(/^0+(?=\d)/, '');
+      if (item.game !== 'mtg' || !set || !number) continue;
+      if (id && await db.get(`SELECT id FROM card_cache WHERE id = ?`, [id])) continue;
+      mtgRows.push({ ...item, set_id: set, number, key: importKey(item) });
+    }
+    if (mtgRows.length) {
+      try {
+        const { cards, pairs } = await scryfallApi.bulkFetchByIdentifier(mtgRows);
+        await scryfallApi.cacheCards(cards);
+        for (const { row, card } of pairs) resolved.set(row.key, card.id);
+      } catch (e) {
+        console.warn(`Import: Scryfall lookup failed: ${e.message}`);
+      }
+    }
+
     const toImport = [];
     const unresolved = [];
     for (const item of rawItems) {
-      const key = JSON.stringify([item.card_id || item.id, item.game, item.set_code || item.set_id, item.set_name,
-        item.collector_number || item.number, item.language, item.name]);
+      const key = importKey(item);
       if (!resolved.has(key)) {
         resolved.set(key, await resolveImportedCard(item, req.user, setsFor).catch((e) => {
           console.warn(`Import: could not resolve ${item.name || item.card_id}: ${e.message}`);
