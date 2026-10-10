@@ -12,9 +12,15 @@
 // touch handling, which is what made the camera freeze the app, so the worker
 // stays.
 //
-// The pixel buffer is TRANSFERRED rather than copied in both directions: a
-// 256x360 RGBA frame is ~370KB, and copying that several times a second is the
-// kind of waste that is invisible until it is not.
+// The pixel buffer is TRANSFERRED rather than copied: a 384x384 RGBA frame is
+// ~590KB, and copying that several times a second is the kind of waste that is
+// invisible until it is not.
+//
+// Engine order, fastest first (issue #80): this model on single-threaded wasm,
+// then the pure-JS contour detector, then (in CameraScanner) a manual shutter if
+// this worker cannot load at all. Every step down is logged and the engine name
+// rides on every result, so the scanner's debug readout says which one runs.
+
 // The CPU-only entry point, NOT 'onnxruntime-web/webgpu' and not the bare
 // 'onnxruntime-web' either. The session below names 'wasm' as its ONLY execution
 // provider, deliberately, for the measured reason spelled out there — so every
@@ -53,10 +59,17 @@ function orderQuad(pts) {
   }
 }
 
-// Served by the backend from data/models. Single-threaded: multi-threaded wasm
-// needs cross-origin isolation (COOP/COEP), which a self-hosted app behind an
-// arbitrary reverse proxy cannot count on, and one thread already makes the
-// cadence (~22ms with FastWeb-Single).
+// The wasm binaries ship with the frontend bundle (scripts/copy-ort.mjs), so
+// /ort/ resolves on the web AND inside the native app's bundled assets.
+//
+// Single-threaded, and NOT for lack of trying. Measured in Chromium with the page
+// cross-origin isolated (#80): numThreads 4 inside this module worker never
+// returns from InferenceSession.create — a hang, not an error, so no fallback
+// could even catch it — while the same model on 4 threads on the MAIN thread runs
+// in 8ms and on 1 thread here in ~20ms (FastWeb). Threads would mean inference on
+// the main thread, which is what used to freeze the camera on phones; one thread
+// in a worker already keeps up with the camera. The Capacitor WebView is never
+// cross-origin isolated anyway.
 ort.env.wasm.wasmPaths = '/ort/';
 ort.env.wasm.numThreads = 1;
 
@@ -85,38 +98,33 @@ function quadArea(q) {
 // is exactly the state auto-scan treats as permission to fire, so a missing model
 // turned auto-scan into a shutter that photographed empty desks. Fall back to the
 // contour detector that shipped before this: worse corners, but a real answer.
-let sessionPromise = null;
 let fallback = null;
-// Which execution provider actually bound, reported with every detection.
-let engine = 'cornelius';
+// Which model actually bound, reported with every detection.
+let engine = 'none';
 
-async function getSession() {
-  if (!sessionPromise) {
-    sessionPromise = (async () => {
-      console.log('[detectWorker] Fetching model /models/cornelius.onnx...');
-      const res = await fetch('/models/cornelius.onnx');
-      const type = res.headers.get('content-type') || '';
-      if (!res.ok || type.includes('text/html')) {
-        throw new Error(`cornelius.onnx not served (${res.status} ${type || 'no type'})`);
-      }
-      const bytes = new Uint8Array(await res.arrayBuffer());
-      const isFastWeb = bytes.length < 4000000;
-      engine = isFastWeb ? 'fastweb-wasm' : 'cornelius-wasm';
-      console.log(`[detectWorker] Creating session (${engine}, ${bytes.length} bytes)...`);
-      const s = await ort.InferenceSession.create(bytes, {
-        executionProviders: ['wasm'],
-        graphOptimizationLevel: 'all',
-      });
-      console.log('[detectWorker] Session created successfully!');
-      return s;
-    })().catch((err) => {
-      console.error('[detectWorker] getSession error:', err);
-      sessionPromise = null;      // allow a later retry
-      throw err;
-    });
-  }
-  return sessionPromise;
-}
+// Resolved by the main thread's { init: { model, error } } message: the model
+// is fetched there, never here (see cardDetector). Frames that arrive first
+// simply wait on it.
+let configure;
+const sessionReady = new Promise((r) => { configure = r; }).then(async (cfg) => {
+  if (!cfg.model) throw new Error(cfg.error || 'no model');
+  const bytes = new Uint8Array(cfg.model);
+  // ONE execution provider, named explicitly. Never a preference list: ORT then
+  // chooses silently, which is how a 1075ms-per-frame WebGPU outline went
+  // unattributed. wasm measured 80ms for this model against WebGPU's 1075ms.
+  engine = bytes.length < 4000000 ? 'fastweb-wasm' : 'cornelius-wasm';
+  const s = await ort.InferenceSession.create(bytes, {
+    executionProviders: ['wasm'],
+    graphOptimizationLevel: 'all',
+  });
+  // Warm-up off the first real frame (kernel setup and allocation land on the
+  // first run), timed so the console says what this device actually does.
+  const t0 = performance.now();
+  await s.run({ image: new ort.Tensor('float32', tensorData, [1, 3, CORN_SIZE, CORN_SIZE]) });
+  console.log(`[detectWorker] ${engine} ready (${bytes.length} bytes, warm-up ${Math.round(performance.now() - t0)}ms)`);
+  return s;
+});
+sessionReady.catch((err) => console.error(`[detectWorker] ${engine === 'none' ? 'model' : engine} unavailable:`, err?.message || err));
 
 function getFallback() {
   if (!fallback) {
@@ -191,17 +199,17 @@ function toTensor(rgba, w, h) {
 }
 
 self.onmessage = async (e) => {
+  if (e.data.init) { configure(e.data.init); return; }
   const { buf, w, h, seq } = e.data;
   const rgba = new Uint8ClampedArray(buf);
   let result;
   try {
     let session;
     try {
-      session = await getSession();
+      session = await sessionReady;
     } catch (loadErr) {
       // Degraded, but still answering. The caller can tell the difference.
-      const r = detectWithFallback(rgba, w, h, seq, loadErr.message);
-      self.postMessage({ ...r, buf: rgba.buffer }, [rgba.buffer]);
+      self.postMessage(detectWithFallback(rgba, w, h, seq, loadErr?.message || String(loadErr)));
       return;
     }
     // Split so a slow frame says WHERE it was slow: the JS resize+normalise and
@@ -242,9 +250,9 @@ self.onmessage = async (e) => {
       result = { seq, detected: false, engine, runMs, corners: sharp };
     }
   } catch (err) {
-    result = { seq, detected: false, error: err?.message || 'detect failed' };
+    // Inference itself failed on this frame. Answer from the contour detector
+    // rather than with nothing, and say why.
+    result = detectWithFallback(rgba, w, h, seq, `${engine} run failed: ${err?.message || err}`);
   }
-  // Hand the buffer back so the caller can reuse it instead of allocating a new
-  // one per frame.
-  self.postMessage({ ...result, buf: rgba.buffer }, [rgba.buffer]);
+  self.postMessage(result);
 };

@@ -991,6 +991,8 @@
   "scan.sameCardInView": "Gleiche Karte noch im Bild – nächste Karte vorhalten.",
   "scan.scanFailed": "Scan fehlgeschlagen. Bitte manuell suchen.",
   "scan.scanningHint": "Scannen ist aktiv: Jede vorgehaltene Karte wird erfasst. Tippen zum Pausieren.",
+  "scan.manualCapture": "Aufnehmen",
+  "scan.manualCaptureHint": "Die Live-Kartenerkennung ist auf diesem Gerät nicht verfügbar. Karte ausrichten und zum Scannen tippen.",
   "scan.scanningOff": "Pausiert",
   "scan.scanningOn": "Scannen",
   "scan.secondPhoto": "Fertig — das war ein zweites Foto derselben Karte.",

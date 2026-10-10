@@ -147,12 +147,15 @@ function CameraScanner({ onAddSuccess, showToast }) {
   const [detectQuad, setDetectQuad] = useState(null);
   const [showDetectOutline, setShowDetectOutline] = useState(() => localStorage.getItem('scan_outline') !== '0');
   const outlineCanvas = useRef(null);   // one canvas, reused every update
-  const orientedCanvas = useRef(null);  // reused for video orientation (zero allocation per frame)
   const dewarpCanvas = useRef(null);    // reused for client dewarp
   const smoothed = useRef(null);        // eased corners, what actually gets drawn
   const lastRawQuad = useRef(null);     // previous RAW detection, for drift
   const steadyFrames = useRef(0);       // consecutive low-drift detections
   const degradedWarned = useRef(false); // logged the detector fallback once
+  // No live detector at all (the worker itself failed to load), so auto-scan can
+  // never fire. A manual shutter appears instead; the server finds the card.
+  const [detectorDown, setDetectorDown] = useState(false);
+  const showSettingsRef = useRef(false); // the readout is only rendered while open
   const autoArmed = useRef(true);       // auto-capture is ready to fire
   const emptyFrames = useRef(0);        // consecutive "no card" detections
   const capturedQuad = useRef(null);    // quad at the last auto-capture
@@ -682,9 +685,15 @@ function CameraScanner({ onAddSuccess, showToast }) {
     ready: { key: 'scan.autoReady', color: 'var(--type-grass)' },
   };
 
+  // Called on every detection, so it only sets state that actually changed: each
+  // set re-renders this whole component, and per-frame renders of a badge that
+  // says the same thing are pure main-thread cost on a phone.
   const refreshAutoState = () => {
     const b = AUTO_BADGE[autoStatusKey(autoArgs())];
-    setAutoState({ label: t(b.key), color: b.color });
+    const label = t(b.key);
+    setAutoState(prev => (prev && prev.label === label && prev.color === b.color ? prev : { label, color: b.color }));
+    // The numeric readout is only on screen while scan settings are open.
+    if (!showSettingsRef.current) return;
     const r = bestFrame.current;
     setDetectStats({
       none: !r || !!r.none,
@@ -737,14 +746,25 @@ function CameraScanner({ onAddSuccess, showToast }) {
     refreshAutoState();
     let stopped = false;
     let timer;
-    const schedule = (ms) => { if (!stopped) timer = setTimeout(tick, ms); };
+    let cancelFrame = null;
+    const schedule = (ms) => { if (!stopped) { clearTimeout(timer); timer = setTimeout(tick, ms); } };
+    // After a result, wait for the camera's NEXT frame rather than a fixed delay:
+    // a frame is never detected twice and none sits waiting on a timer. The
+    // timeout is a guard for a video that stops presenting frames.
+    const scheduleFrame = () => {
+      const v = videoRef.current;
+      if (stopped || !v?.requestVideoFrameCallback) { schedule(DETECT_INTERVAL_MS); return; }
+      const id = v.requestVideoFrameCallback(() => tick());
+      cancelFrame = () => v.cancelVideoFrameCallback(id);
+      schedule(500);
+    };
 
     // Applied when the worker answers, not when the frame was submitted.
     const onDetectResult = (found) => {
       if (stopped) return;
       // The pacing lives here, not after the submit: one frame in flight, and the
       // next grabbed only once this one has landed.
-      schedule(DETECT_INTERVAL_MS);
+      scheduleFrame();
       // Say so, once, when the neural detector could not be loaded and the
       // contour fallback is carrying the outline. Silent degradation here looks
       // exactly like "the scanner got worse for no reason".
@@ -757,6 +777,8 @@ function CameraScanner({ onAddSuccess, showToast }) {
         degradedWarned.current = true;
         console.warn(`Card detector degraded to contour fallback: ${found.degraded}`);
       }
+      if (found.error) console.warn(`Card detector (${found.engine || 'none'}): ${found.error}`);
+      if (found.fatal) setDetectorDown(true);
       if (!found.detected) {
         steadyFrames.current = 0;
         smoothed.current = null;
@@ -779,8 +801,8 @@ function CameraScanner({ onAddSuccess, showToast }) {
         }
         lastDrift.current = null;
         lastCorners.current = found.corners ?? null;
-        lastEngine.current = found.engine || "cornelius";
-        setDetectQuad(null);
+        lastEngine.current = found.engine || 'none';
+        setDetectQuad(q => q && null);   // already empty: no re-render
         refreshAutoState();
         return;
       }
@@ -790,7 +812,7 @@ function CameraScanner({ onAddSuccess, showToast }) {
       const drift = meanCornerDrift(lastRawQuad.current, found.quad);
       lastDrift.current = Number.isFinite(drift) ? drift : null;
       lastCorners.current = found.corners ?? null;
-      lastEngine.current = found.engine || "cornelius";
+      lastEngine.current = found.engine || 'none';
       lastRawQuad.current = found.quad;
       smoothed.current = smoothQuad(smoothed.current, found.quad);
       steadyFrames.current = drift < STEADY_DRIFT ? steadyFrames.current + 1 : 0;
@@ -814,6 +836,9 @@ function CameraScanner({ onAddSuccess, showToast }) {
 
     const tick = () => {
       if (stopped) return;
+      clearTimeout(timer);
+      cancelFrame?.();
+      cancelFrame = null;
       try {
         const guideElement = document.querySelector('.scan-card-guide');
         // Skip while a scan owns the pipeline, or before the video has a frame to
@@ -833,13 +858,13 @@ function CameraScanner({ onAddSuccess, showToast }) {
         }
       } catch {
         // A dropped preview frame is not worth surfacing; the next tick retries.
-        if (!stopped) setDetectQuad(null);
+        if (!stopped) setDetectQuad(q => q && null);
       }
       // Nothing was submitted, so nothing will call back. Idle poll.
       schedule(DETECT_IDLE_MS);
     };
     timer = setTimeout(tick, 400);   // let the camera settle before the first look
-    return () => { stopped = true; clearTimeout(timer); stopDetect(); };
+    return () => { stopped = true; clearTimeout(timer); cancelFrame?.(); stopDetect(); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cameraActive, autoScan]);
 
@@ -1036,42 +1061,30 @@ function CameraScanner({ onAddSuccess, showToast }) {
   };
 
   // Resolves the landscape-to-portrait camera stream rotation bug on mobile devices.
-  // It creates a canvas matching the visual orientation on the user's screen.
-  // Pass maxW to downscale the output (cheap enough to run every frame for the
-  // live detection loop); omit it for a full-resolution capture.
-  const getOrientedVideoCanvas = (video, maxW = 0) => {
+  // Stream orientation rotation applies to mobile devices (iOS/Android) where
+  // physical camera sensors deliver landscape raw frames while displayed in
+  // portrait. Desktop webcams deliver unrotated frames matching the screen layout.
+  // Returns the oriented frame size and a draw that paints the video into that
+  // oriented space on any context — no intermediate canvas.
+  const videoOrientation = (video, videoRect) => {
     const videoWidth = video.videoWidth;
     const videoHeight = video.videoHeight;
-    const canvas = orientedCanvas.current || (orientedCanvas.current = document.createElement('canvas'));
-
-    const videoRect = video.getBoundingClientRect();
     const streamRatio = videoWidth / videoHeight;
     const visualRatio = videoRect.width / videoRect.height;
-
-    // Stream orientation rotation applies to mobile devices (iOS/Android)
-    // where physical camera sensors deliver landscape raw frames while displayed in portrait.
-    // Desktop webcams deliver unrotated frames matching the screen layout.
     const isMobile = isNative || /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
     const isRotated = isMobile && ((streamRatio > 1.0 && visualRatio < 1.0) || (streamRatio < 1.0 && visualRatio > 1.0));
-
-    // Oriented output dimensions, then an optional uniform downscale.
     const outW = isRotated ? videoHeight : videoWidth;
     const outH = isRotated ? videoWidth : videoHeight;
-    const scale = (maxW && outW > maxW) ? maxW / outW : 1;
-    canvas.width = Math.max(1, Math.round(outW * scale));
-    canvas.height = Math.max(1, Math.round(outH * scale));
-    const ctx = canvas.getContext('2d');
-    ctx.scale(scale, scale); // subsequent coords are in unscaled (oriented) space
-
-    if (isRotated) {
-      ctx.translate(outW / 2, outH / 2);
-      ctx.rotate(90 * Math.PI / 180);
-      ctx.drawImage(video, -videoWidth / 2, -videoHeight / 2, videoWidth, videoHeight);
-    } else {
-      ctx.drawImage(video, 0, 0, videoWidth, videoHeight);
-    }
-
-    return canvas;
+    const draw = (ctx) => {
+      if (isRotated) {
+        ctx.translate(outW / 2, outH / 2);
+        ctx.rotate(90 * Math.PI / 180);
+        ctx.drawImage(video, -videoWidth / 2, -videoHeight / 2, videoWidth, videoHeight);
+      } else {
+        ctx.drawImage(video, 0, 0, videoWidth, videoHeight);
+      }
+    };
+    return { width: outW, height: outH, draw };
   };
 
   // The guide-box region of the current frame, oriented and deskewed to the box.
@@ -1087,10 +1100,15 @@ function CameraScanner({ onAddSuccess, showToast }) {
   // once their per-tab canvas memory is exhausted.
   // `square` scales both axes to maxW directly in hardware (384x384), eliminating
   // software bilinear resize in the detect worker.
+  //
+  // The video is drawn STRAIGHT into the output with orientation and crop folded
+  // into one transform. It used to be drawn full-resolution into an intermediate
+  // oriented canvas first — a resize plus a full-frame (often 1080p+) GPU copy on
+  // EVERY live-detection frame, just to sample a 384x384 crop out of it.
   const buildFramedCanvas = (video, guideElement, maxW = 0, target = null, square = false) => {
     if (!video?.videoWidth || !guideElement) return null;
-    const oc = getOrientedVideoCanvas(video);
     const videoRect = video.getBoundingClientRect();
+    const oc = videoOrientation(video, videoRect);
     const guideRect = guideElement.getBoundingClientRect();
     // Cover-transform mapping from displayed video px to oriented-canvas px
     // (matches object-fit:cover on the preview).
@@ -1111,9 +1129,15 @@ function CameraScanner({ onAddSuccess, showToast }) {
     const destH = Math.max(1, Math.round(fullH * sY));
 
     const canvas = target || document.createElement('canvas');
-    canvas.width = destW;                       // also resets pixels + transform
-    canvas.height = destH;
+    // Resizing reallocates the backing store, so only when the size changed —
+    // the live loop reuses one canvas at the same size every frame.
+    if (canvas.width !== destW || canvas.height !== destH) {
+      canvas.width = destW;                     // also resets pixels + transform
+      canvas.height = destH;
+    }
     const fctx = canvas.getContext('2d');
+    fctx.setTransform(1, 0, 0, 1, 0, 0);
+    fctx.clearRect(0, 0, destW, destH);
     // Sample the (possibly rotated, off-centre) box region upright: dest centre
     // maps to the box centre, undo the box rotation, draw the frame. Pixels past
     // the box come through black; the server auto-detects the card inside.
@@ -1121,7 +1145,7 @@ function CameraScanner({ onAddSuccess, showToast }) {
     fctx.translate(fullW / 2, fullH / 2);
     fctx.rotate(-(guideAngle * Math.PI) / 180);
     fctx.translate(-cx, -cy);
-    fctx.drawImage(oc, 0, 0);
+    oc.draw(fctx);
     return canvas;
   };
 
@@ -1469,6 +1493,7 @@ function CameraScanner({ onAddSuccess, showToast }) {
   captureBlockedRef.current = isDrawerOpen || scanMatches.length > 0 || !!autoAddTargetCard || !!dupConfirmCard;
   loadingRef.current = loading;
   autoScanRef.current = autoScan;
+  showSettingsRef.current = showScanSettings;
   minFillRef.current = minFill;
   minSteadyRef.current = minSteady;
 
@@ -2249,6 +2274,22 @@ function CameraScanner({ onAddSuccess, showToast }) {
                 <span style={{ position: 'absolute', top: 2, left: autoScan ? 15 : 2, width: 11, height: 11, borderRadius: '50%', background: autoScan ? 'var(--accent-red)' : '#fff', transition: 'left 0.2s' }} />
               </span>
             </button>
+            {/* The last fallback: no live detector could load at all, so auto-scan
+                can never fire. A plain shutter still works — the whole frame goes
+                up and the server finds the card itself. */}
+            {detectorDown && (
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => handleCapture()}
+                disabled={loading}
+                title={t('scan.manualCaptureHint')}
+                style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0 0.8rem' }}
+              >
+                <Camera size={15} />
+                <span style={{ fontSize: '0.8rem', fontWeight: 700 }}>{t('scan.manualCapture')}</span>
+              </button>
+            )}
             <button
               type="button"
               className={`btn ${showScanSettings ? 'btn-primary' : 'btn-secondary'}`}
