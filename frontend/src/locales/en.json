@@ -533,6 +533,8 @@
   "scan.scanningOn": "Scanning",
   "scan.scanningOff": "Paused",
   "scan.scanningHint": "Scanning is on: each card is captured as you present it. Tap to pause.",
+  "scan.manualCapture": "Capture",
+  "scan.manualCaptureHint": "Live card detection is unavailable on this device. Frame the card and tap to scan it.",
   "scan.cardType": "Card type",
   "scan.autoAdd": "Auto-add matches",
   "scan.autoAddHint": "File a confident match straight into your collection. Off: review each card in the add form first.",
