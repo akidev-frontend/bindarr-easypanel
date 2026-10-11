@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { Search, Trash2, Edit2, LayoutGrid, List, SlidersHorizontal, X, MousePointerClick } from 'lucide-react';
 import { getCardDisplayName, translateJapaneseName } from '../utils/langHelper';
 import { priceText } from '../utils/formatPrice';
-import { CONDITIONS, PRINTINGS, GRADERS } from '../utils/cardOptions';
+import { CONDITIONS, PRINTINGS, GRADERS, getLanguageNamesForGame } from '../utils/cardOptions';
 import { getPrintingBadgeLabel, getPrintingBadgeStyle, getFoilOverlayClass } from '../utils/cardPrinting';
 import { getCardRarityBorder, getRarityBadgeLabel, getRarityBadgeStyle } from '../utils/cardRarity';
 import { sortCardsByOrder } from '../utils/cardSort';
@@ -646,6 +646,10 @@ function CollectionList({ statsTrigger, onUpdate, showToast, selectedCardFilter,
           <select className="select-control" value="" disabled={!selectedIds.size} onChange={(e) => { if (e.target.value) runBulk('printing', e.target.value); e.target.value = ''; }} style={{ fontSize: '0.72rem', maxWidth: '150px', padding: '0.3rem 0.4rem' }}>
             <option value="">{t('bulk.setPrinting')}</option>
             {PRINTINGS.map(p => <option key={p} value={p}>{p}</option>)}
+          </select>
+          <select className="select-control" value="" disabled={!selectedIds.size} onChange={(e) => { if (e.target.value) runBulk('language', e.target.value); e.target.value = ''; }} style={{ fontSize: '0.72rem', maxWidth: '150px', padding: '0.3rem 0.4rem' }}>
+            <option value="">{t('bulk.setLanguage')}</option>
+            {getLanguageNamesForGame(gameFilter).map(l => <option key={l} value={l}>{l}</option>)}
           </select>
           <div style={{ width: '1px', height: '22px', background: 'var(--border-glass)' }} />
           <PackPriceSplitter

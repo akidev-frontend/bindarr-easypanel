@@ -161,6 +161,7 @@
   "bulk.selectedCount.other": "{count} ausgewählt",
   "bulk.setCondition": "Zustand setzen…",
   "bulk.setPrinting": "Druck setzen…",
+  "bulk.setLanguage": "Sprache setzen…",
   "bulk.unassignedPile": "Nicht zugewiesener Stapel",
   "bulk.untrade": "Tausch aufheben",
   "card.certNumber": "Zert.-Nr.",

@@ -905,6 +905,17 @@ router.post('/collection/bulk-add', async (req, res) => {
   });
 });
 
+// The card a copy should reference once its language is `language`: that
+// language's printing when one exists, else the card it already has. Shared by
+// the single edit and the bulk action so the two cannot disagree.
+async function cardIdForLanguage(cardId, language) {
+  const card = await db.get(`SELECT * FROM card_cache WHERE id = ?`, [cardId]);
+  const localized = card && await cardApi.printingInLanguage(card, language);
+  if (!localized || !localized.id || localized.id === cardId) return cardId;
+  await tcgdexApi.learnEnglishName(localized);
+  return localized.id;
+}
+
 // 4. Update Collection Entry
 router.put('/collection/:id', async (req, res) => {
   const { id } = req.params;
@@ -961,14 +972,10 @@ router.put('/collection/:id', async (req, res) => {
       updates.push('language = ?');
       params.push(language);
       if (language !== entry.language) {
-        let card = await db.get(`SELECT * FROM card_cache WHERE id = ?`, [entry.card_id]);
-        if (card) {
-          const localized = await cardApi.printingInLanguage(card, language);
-          if (localized && localized.id && localized.id !== entry.card_id) {
-            await tcgdexApi.learnEnglishName(localized);
-            updates.push('card_id = ?');
-            params.push(localized.id);
-          }
+        const cardId = await cardIdForLanguage(entry.card_id, language);
+        if (cardId !== entry.card_id) {
+          updates.push('card_id = ?');
+          params.push(cardId);
         }
       }
     }
@@ -1223,7 +1230,7 @@ router.delete('/collection/:id', async (req, res) => {
 });
 
 // 5b. Bulk actions
-const BULK_ACTIONS = ['delete', 'move', 'trade', 'untrade', 'list_type', 'condition', 'printing', 'purchase_split', 'add_to_deck'];
+const BULK_ACTIONS = ['delete', 'move', 'trade', 'untrade', 'list_type', 'condition', 'printing', 'language', 'purchase_split', 'add_to_deck'];
 // Allowed field values mirror the collection table CHECK constraints in db.js.
 const BULK_CONDITIONS = ['Near Mint', 'Lightly Played', 'Moderately Played', 'Heavily Played', 'Damaged'];
 const BULK_PRINTINGS = ['Normal', 'Holofoil', 'Reverse Holofoil', '1st Edition', 'Promo'];
@@ -1297,6 +1304,22 @@ router.post('/collection/bulk', async (req, res) => {
       // input), so it is safe to interpolate.
       const result = await db.run(`UPDATE collection SET ${action} = ? WHERE id IN (${placeholders}) AND user_id = ?`, [value, ...ids, req.user.id]);
       return res.json({ message: `Set ${action} on ${result.changes} card(s)`, affected: result.changes });
+    }
+
+    // Same semantics as the single edit: a copy whose language changes moves to
+    // that language's printing when one exists. A game never printed in the
+    // language (Lorcana has no Spanish) is skipped rather than mislabelled.
+    if (action === 'language') {
+      if (!languages.LANGUAGES.some(l => l.name === value)) return res.status(400).json({ error: 'Invalid language' });
+      const entries = await db.all(`SELECT id, card_id, language, game FROM collection WHERE id IN (${placeholders}) AND user_id = ?`, [...ids, req.user.id]);
+      let changed = 0;
+      for (const entry of entries) {
+        if (!languages.isLanguageSupported(entry.game, value)) continue;
+        const cardId = value === entry.language ? entry.card_id : await cardIdForLanguage(entry.card_id, value);
+        await db.run(`UPDATE collection SET language = ?, card_id = ? WHERE id = ? AND user_id = ?`, [value, cardId, entry.id, req.user.id]);
+        changed++;
+      }
+      return res.json({ message: `Set language on ${changed} card(s)`, affected: changed });
     }
 
     // Distribute a total price paid (a pack/deck) across the selected entries,

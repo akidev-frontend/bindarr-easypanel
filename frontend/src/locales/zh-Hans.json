@@ -156,6 +156,7 @@
   "bulk.selectedCount.other": "已选 {count} 项",
   "bulk.setCondition": "设置品相…",
   "bulk.setPrinting": "设置印刷…",
+  "bulk.setLanguage": "设置语言…",
   "bulk.unassignedPile": "未分配的一堆",
   "bulk.untrade": "取消可交换",
   "card.certNumber": "证书号",

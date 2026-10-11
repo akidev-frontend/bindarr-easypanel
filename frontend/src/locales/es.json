@@ -166,6 +166,7 @@
   "bulk.selectedCount.other": "{count} seleccionadas",
   "bulk.setCondition": "Definir el estado…",
   "bulk.setPrinting": "Definir la impresión…",
+  "bulk.setLanguage": "Definir el idioma…",
   "bulk.unassignedPile": "Montón sin asignar",
   "bulk.untrade": "Quitar del intercambio",
   "card.certNumber": "N.º de cert.",

@@ -156,6 +156,7 @@
   "bulk.selectedCount.other": "{count}개 선택됨",
   "bulk.setCondition": "상태 설정…",
   "bulk.setPrinting": "인쇄 설정…",
+  "bulk.setLanguage": "언어 설정…",
   "bulk.unassignedPile": "미지정 묶음",
   "bulk.untrade": "교환용 해제",
   "card.certNumber": "인증번호",

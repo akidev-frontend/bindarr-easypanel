@@ -166,6 +166,7 @@
   "bulk.selectedCount.other": "{count} selezionate",
   "bulk.setCondition": "Imposta lo stato…",
   "bulk.setPrinting": "Imposta la stampa…",
+  "bulk.setLanguage": "Imposta la lingua…",
   "bulk.unassignedPile": "Mucchio non assegnato",
   "bulk.untrade": "Togli dagli scambi",
   "card.certNumber": "N. cert.",
