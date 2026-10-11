@@ -7,11 +7,14 @@ const CONDITION_MAP = {
 };
 
 const STRATEGIES = {
+  // Every .csv the Settings page uploads lands here (it sends format 'csv'), so
+  // the column names other apps use are read too: without a set and a number
+  // the row cannot be resolved to a card at all (#75).
   internal: (row) => ({
-    name: row['Name'] || row['card_name'] || row['Name'],
-    set_code: row['Set ID'] || row['set_code'] || row['Set Code'],
+    name: row['Name'] || row['card_name'] || row['Card Name'] || row['Product Name'],
+    set_code: row['Set ID'] || row['set_code'] || row['Set Code'] || row['Set code'] || row['Set'],
     set_name: row['Set Name'] || row['set_name'],
-    collector_number: row['Card Number'] || row['card_number'] || row['number'],
+    collector_number: row['Card Number'] || row['card_number'] || row['number'] || row['Number'] || row['Card number'] || row['Collector Number'],
     card_id: row['Card ID'] || row['card_id'],
     quantity: parseInt(row['Quantity'] || row['quantity'], 10) || 1,
     condition: CONDITION_MAP[(row['Condition'] || '').toLowerCase()] || 'Near Mint',
