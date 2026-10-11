@@ -8,7 +8,8 @@ const {
   compartmentAcceptsCard,
   sortCards,
   rebalanceCompartmentByScheme,
-  STACK_KEY_SQL
+  STACK_KEY_SQL,
+  normalizeFixedSlots
 } = require('../utils/compartmentSort');
 const { defaultCompartmentPlan, normalizeRuleConfig } = require('../utils/collectionHelpers');
 
@@ -29,7 +30,7 @@ async function loadEntries(entryIds, userId) {
   const holes = entryIds.map(() => '?').join(',');
   const rows = await db.all(`
     SELECT c.id, c.id AS entry_id, c.card_id, c.printing, c.language, c.favorite, c.is_trade, c.list_type,
-           cc.name, cc.printed_name, cc.set_name, cc.number, cc.types, cc.subtypes, cc.supertype, cc.rarity, cc.image_url,
+           cc.name, cc.printed_name, cc.set_id, cc.set_name, cc.number, cc.types, cc.subtypes, cc.supertype, cc.rarity, cc.image_url,
            cc.game, cc.cmc, cc.color_identity,
            cc.price_trend, cc.price_normal, cc.price_holofoil, cc.price_reverse_holofoil
     FROM collection c
@@ -117,7 +118,7 @@ const RULE_TYPES = ['any', 'alphabetical_range', 'specific_sets', 'compound'];
 const GAME_RESTRICTIONS = ['any', 'pokemon', 'mtg'];
 
 router.post('/locations', async (req, res) => {
-  const { name, type, sort_order = 'name-asc', foil_sorting = 'normals_first', rule_type = 'any', rule_config, compartmentPlan, game = 'any' } = req.body;
+  const { name, type, sort_order = 'name-asc', foil_sorting = 'normals_first', rule_type = 'any', rule_config, compartmentPlan, game = 'any', fixed_slots } = req.body;
 
   if (!name || !type) {
     return res.status(400).json({ error: 'name and type are required' });
@@ -134,6 +135,12 @@ router.post('/locations', async (req, res) => {
   } catch {
     return res.status(400).json({ error: 'rule_config must be valid JSON' });
   }
+  let fixedSlotsJson;
+  try {
+    fixedSlotsJson = normalizeFixedSlots(fixed_slots);
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
   try {
     const existing = await db.get(`SELECT id FROM locations WHERE name = ? AND user_id = ?`, [name, req.user.id]);
     if (existing) {
@@ -141,9 +148,9 @@ router.post('/locations', async (req, res) => {
     }
 
     const result = await db.run(`
-      INSERT INTO locations (name, type, sort_order, foil_sorting, rule_type, rule_config, game, user_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `, [name, type, sort_order, foil_sorting || 'normals_first', rule_type, ruleConfigJson, game, req.user.id]);
+      INSERT INTO locations (name, type, sort_order, foil_sorting, rule_type, rule_config, game, fixed_slots, user_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [name, type, sort_order, foil_sorting || 'normals_first', rule_type, ruleConfigJson, game, fixedSlotsJson, req.user.id]);
 
     const plan = compartmentPlan || defaultCompartmentPlan(type);
     await db.createCompartments(result.lastID, Math.max(1, parseInt(plan.count, 10) || 1), Math.max(1, parseInt(plan.capacity, 10) || 40));
@@ -169,7 +176,7 @@ router.get('/locations/:id', async (req, res) => {
 
 router.put('/locations/:id', async (req, res) => {
   const { id } = req.params;
-  const { name, type, sort_order, foil_sorting, rule_type, rule_config, game, locked, allow_stacking } = req.body;
+  const { name, type, sort_order, foil_sorting, rule_type, rule_config, game, locked, allow_stacking, fixed_slots } = req.body;
   if (rule_type !== undefined && !RULE_TYPES.includes(rule_type)) {
     return res.status(400).json({ error: 'Invalid rule_type' });
   }
@@ -181,6 +188,12 @@ router.put('/locations/:id', async (req, res) => {
     ruleConfigJson = rule_config !== undefined ? normalizeRuleConfig(rule_config) : undefined;
   } catch {
     return res.status(400).json({ error: 'rule_config must be valid JSON' });
+  }
+  let fixedSlotsJson;
+  try {
+    fixedSlotsJson = fixed_slots !== undefined ? normalizeFixedSlots(fixed_slots) : undefined;
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
   }
   try {
     const loc = await db.get(`SELECT id, sort_order, foil_sorting FROM locations WHERE id = ? AND user_id = ?`, [id, req.user.id]);
@@ -223,6 +236,10 @@ router.put('/locations/:id', async (req, res) => {
         locked === undefined ? null : (locked ? 1 : 0),
         allow_stacking === undefined ? null : (allow_stacking ? 1 : 0),
         id, req.user.id]);
+    // Its own statement: null is how the client turns it off, which COALESCE can't express.
+    if (fixedSlotsJson !== undefined) {
+      await db.run(`UPDATE locations SET fixed_slots = ? WHERE id = ? AND user_id = ?`, [fixedSlotsJson, id, req.user.id]);
+    }
 
     let evicted = 0;
     if (rule_type !== undefined || rule_config !== undefined || game !== undefined) {
@@ -582,7 +599,7 @@ router.post('/locations/:id/recommend', async (req, res) => {
     const location = await db.get(`SELECT * FROM locations WHERE id = ? AND user_id = ?`, [id, req.user.id]);
     if (!location) return res.status(404).json({ error: 'Location not found' });
 
-    const cardMetadata = await db.get(`SELECT name, set_name, number, types, subtypes, price_trend, price_normal, price_holofoil, price_reverse_holofoil, supertype, rarity, game, cmc, color_identity FROM card_cache WHERE id = ?`, [card_id]);
+    const cardMetadata = await db.get(`SELECT name, set_id, set_name, number, types, subtypes, price_trend, price_normal, price_holofoil, price_reverse_holofoil, supertype, rarity, game, cmc, color_identity FROM card_cache WHERE id = ?`, [card_id]);
     if (!cardMetadata) return res.status(404).json({ error: 'Card not found in cache' });
     cardMetadata.printing = printing;
     cardMetadata.language = language;
@@ -720,7 +737,7 @@ router.post('/locations/:id/resort', async (req, res) => {
 
     const cards = await db.all(`
       SELECT c.id as entry_id, c.card_id, c.printing, c.language, c.quantity, c.favorite, c.is_trade, c.list_type,
-             cc.name, cc.printed_name, cc.set_name, cc.number, cc.types, cc.rarity, cc.supertype, cc.image_url, cc.game,
+             cc.name, cc.printed_name, cc.set_id, cc.set_name, cc.number, cc.types, cc.rarity, cc.supertype, cc.image_url, cc.game,
              cc.price_trend, cc.price_normal, cc.price_holofoil, cc.price_reverse_holofoil, cc.cmc, cc.color_identity
       FROM collection c
       JOIN card_cache cc ON c.card_id = cc.id

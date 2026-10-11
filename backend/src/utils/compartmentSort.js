@@ -250,6 +250,133 @@ function stackKey(row) {
   return `${id}|${row.printing || 'Normal'}|${row.language || 'English'}`;
 }
 
+// Fixed slots (locations.fixed_slots): a binder can pin a set's cards to the
+// pocket their collector number names, so #23 sits in slot 23 even while 1-22
+// are still missing. Stored as JSON [{ set_id, start_slot, max_number }]; NULL
+// means off. Slots are counted across the whole binder in page order, 1-based.
+const FIXED_SLOT_LIMIT = 100000;
+
+// Validates what a client sent and returns the JSON to store (null = off).
+// Throws with a client-safe message on bad input.
+function normalizeFixedSlots(input) {
+  if (input === null || input === undefined || input === '') return null;
+  let list = input;
+  if (typeof list === 'string') {
+    try { list = JSON.parse(list); } catch { throw new Error('fixed_slots must be valid JSON'); }
+  }
+  if (!Array.isArray(list)) throw new Error('fixed_slots must be a list');
+  if (list.length === 0) return null;
+  if (list.length > 50) throw new Error('fixed_slots allows at most 50 sets');
+  const intIn = (v, name) => {
+    const n = Number(v);
+    if (!Number.isInteger(n) || n < 1 || n > FIXED_SLOT_LIMIT) throw new Error(`${name} must be a whole number from 1 to ${FIXED_SLOT_LIMIT}`);
+    return n;
+  };
+  const seen = new Set();
+  const out = list.map(e => {
+    const setId = typeof e?.set_id === 'string' ? e.set_id.trim() : '';
+    if (!setId || setId.length > 64) throw new Error('Each fixed slot entry needs a set_id');
+    if (seen.has(fixedSetKey(setId))) throw new Error(`Set ${setId} is listed twice`);
+    seen.add(fixedSetKey(setId));
+    return {
+      set_id: setId,
+      start_slot: e.start_slot == null || e.start_slot === '' ? 1 : intIn(e.start_slot, 'start_slot'),
+      max_number: e.max_number == null || e.max_number === '' ? null : intIn(e.max_number, 'max_number')
+    };
+  });
+  return JSON.stringify(out);
+}
+
+// The sets table keys Scryfall sets as "mtg-<code>" while MTG cards carry the
+// bare code, so compare on the bare form.
+function fixedSetKey(setId) {
+  return String(setId || '').toLowerCase().replace(/^mtg-/, '');
+}
+
+// Stored config -> ranges with an inclusive `end` slot, or null when off. A set
+// with no max_number runs up to the next set's start slot (open-ended if last),
+// so one set's high numbers never land in another set's pockets.
+function fixedSlotRanges(stored) {
+  const list = safeJsonParse(stored, null);
+  if (!Array.isArray(list) || list.length === 0) return null;
+  const sorted = list.map(e => ({ ...e, start_slot: e.start_slot || 1, key: fixedSetKey(e.set_id) }))
+    .sort((a, b) => a.start_slot - b.start_slot);
+  return sorted.map((e, i) => ({
+    ...e,
+    end: e.max_number
+      ? e.start_slot + e.max_number - 1
+      : (sorted[i + 1] ? sorted[i + 1].start_slot - 1 : Infinity)
+  }));
+}
+
+// The binder-wide slot a card is pinned to, or null when it has none: set not
+// configured, collector number not a plain integer ("123a", "TG01", "★"), or past
+// the set's cap.
+function fixedSlotFor(card, ranges) {
+  if (!ranges || !card) return null;
+  const key = fixedSetKey(card.set_id);
+  const range = key && ranges.find(r => r.key === key);
+  if (!range) return null;
+  const num = String(card.number || '').trim();
+  if (!/^\d+$/.test(num)) return null;
+  const n = parseInt(num, 10);
+  if (n < 1) return null;
+  const slot = range.start_slot + n - 1;
+  return slot <= range.end ? slot : null;
+}
+
+// Last slot any configured set reserves. Cards with no fixed slot are filed only
+// on pages that start after it; Infinity means there is no such area.
+function lastReservedSlot(ranges) {
+  return Math.max(...ranges.map(r => r.end));
+}
+
+// First binder-wide slot of each compartment (pages in idx order, locked ones
+// included: a locked page still takes up its pockets in the physical binder).
+function compartmentStartSlots(compartments) {
+  const starts = new Map();
+  let next = 1;
+  [...compartments].sort((a, b) => a.idx - b.idx).forEach(c => { starts.set(c.id, next); next += c.capacity; });
+  return starts;
+}
+
+// Positions for the cards on one page of a fixed-slot binder. Pinned cards take
+// their own pocket (first come keeps it; on a stacking binder a twin shares it).
+// Anything else on the page — a manual placement, a second copy of a pinned card
+// — keeps its pocket if that is free, otherwise takes the first free pocket no
+// set reserves, then any free pocket, and only past capacity if the page is full.
+function fixedPagePositions(cards, { ranges, startSlot, capacity, allowStacking }) {
+  const taken = new Map(); // local slot -> stack key
+  const positions = new Map();
+  const claim = (local, card) => {
+    const key = stackKey(card);
+    if (taken.has(local) && !(allowStacking && taken.get(local) === key)) return false;
+    taken.set(local, key);
+    positions.set(card.id, local * 1000);
+    return true;
+  };
+  const leftovers = [];
+  for (const card of cards) {
+    const slot = fixedSlotFor(card, ranges);
+    const local = slot ? slot - startSlot + 1 : 0;
+    if (!(local >= 1 && local <= capacity && claim(local, card))) leftovers.push(card);
+  }
+  const reserved = (local) => ranges.some(r => startSlot + local - 1 >= r.start_slot && startSlot + local - 1 <= r.end);
+  let past = capacity;
+  for (const card of leftovers) {
+    const current = Math.floor((card.position || 0) / 1000);
+    if (current >= 1 && current <= capacity && claim(current, card)) continue;
+    let placed = false;
+    for (const wantReserved of [false, true]) {
+      for (let local = 1; local <= capacity && !placed; local++) {
+        if (reserved(local) === wantReserved) placed = claim(local, card);
+      }
+    }
+    if (!placed) positions.set(card.id, ++past * 1000);
+  }
+  return positions;
+}
+
 async function loadCompartments(database, locationId, userId) {
   const dbClient = database || db;
   // The location's stacking flag rides along rather than being passed in by every
@@ -310,7 +437,8 @@ async function recommendSlot(database, location, cardMetadata, overrideCompartme
   if (location.locked) return null;
   // Drop locked compartments so filing never targets them; their existing cards
   // stay put and manual moves still work.
-  const compartments = (overrideCompartments || await loadCompartments(dbClient, location.id, location.user_id)).filter(c => !c.locked);
+  const allCompartments = overrideCompartments || await loadCompartments(dbClient, location.id, location.user_id);
+  let compartments = allCompartments.filter(c => !c.locked);
   if (compartments.length === 0) return null;
 
   if (!locationAcceptsCard(location, cardMetadata)) {
@@ -372,11 +500,38 @@ async function recommendSlot(database, location, cardMetadata, overrideCompartme
     ? (overrideCompartments.find(oc => oc.id === c.id)?.count || 0)
     : (c.count !== undefined ? c.count : (cardsByCompId.get(c.id) || []).reduce((sum, card) => sum + (card.quantity || 1), 0));
 
+  // Fixed-slot binder: a pinned card goes to its own pocket when that pocket is
+  // free, on an unlocked page whose rules accept it. Everything else — unpinned
+  // cards, and pinned ones whose pocket is taken — is filed by the normal scheme
+  // on the pages after the last reserved slot, or overflows to another container
+  // (via the "full" path below) when the reserved ranges leave no such pages.
+  const ranges = fixedSlotRanges(location.fixed_slots);
+  if (ranges) {
+    const starts = compartmentStartSlots(allCompartments);
+    const slot = fixedSlotFor(cardMetadata, ranges);
+    const page = slot && allCompartments.find(c => slot >= starts.get(c.id) && slot < starts.get(c.id) + c.capacity);
+    if (page && !page.locked && compartmentAcceptsCard(page, cardMetadata)) {
+      const local = slot - starts.get(page.id) + 1;
+      const occupied = allLocationCards.some(c => c.compartment_id === page.id && Math.floor((c.position || 0) / 1000) === local);
+      if (!occupied) {
+        return {
+          location_id: location.id,
+          compartment_id: page.id,
+          position: local * 1000,
+          label: `${compartmentLabel(page, location.type)}, Pos ${local} (in ${location.name})`,
+          reason: `Fixed slot ${slot} for ${cardMetadata.set_name || cardMetadata.set_id} #${cardMetadata.number}`
+        };
+      }
+    }
+    const last = lastReservedSlot(ranges);
+    compartments = compartments.filter(c => starts.get(c.id) > last);
+  }
+
   const allCompartmentsFull = compartments.every(c => countOf(c) >= c.capacity);
 
   if (allCompartmentsFull) {
     const otherLocations = await dbClient.all(
-      `SELECT id, name, type, sort_order, foil_sorting, rule_type, rule_config, game, allow_stacking, user_id FROM locations WHERE user_id = ? AND id != ? AND locked = 0 ORDER BY id ASC`,
+      `SELECT id, name, type, sort_order, foil_sorting, rule_type, rule_config, game, allow_stacking, fixed_slots, user_id FROM locations WHERE user_id = ? AND id != ? AND locked = 0 ORDER BY id ASC`,
       [location.user_id, location.id]
     );
     for (const otherLoc of otherLocations) {
@@ -590,7 +745,7 @@ async function recommendSlot(database, location, cardMetadata, overrideCompartme
 async function rebalanceCompartmentByScheme(database, compartmentId, sortOrder, foilSorting) {
   const dbClient = database || db;
   const cards = await dbClient.all(
-    `SELECT c.*, cc.name, cc.printed_name, cc.set_id as set_code, cc.set_name, cc.number, cc.types, cc.rarity, cc.price_trend
+    `SELECT c.*, cc.name, cc.printed_name, cc.set_id, cc.set_id as set_code, cc.set_name, cc.number, cc.types, cc.rarity, cc.price_trend
      FROM collection c
      LEFT JOIN card_cache cc ON c.card_id = cc.id
      WHERE c.compartment_id = ?
@@ -599,20 +754,39 @@ async function rebalanceCompartmentByScheme(database, compartmentId, sortOrder, 
   );
 
   if (!cards || cards.length === 0) return;
-  const sorted = sortCards(cards, sortOrder, foilSorting);
 
+  // On a fixed-slot binder the reserved pages keep their gaps: renumbering them
+  // 1..n would slide #23 into slot 1. Pages past the reserved range sort as usual.
+  let positions = null;
+  const loc = await dbClient.get(
+    `SELECT l.id, l.fixed_slots, l.allow_stacking FROM compartments cp JOIN locations l ON l.id = cp.location_id WHERE cp.id = ?`,
+    [compartmentId]
+  );
+  const ranges = loc && fixedSlotRanges(loc.fixed_slots);
+  if (ranges) {
+    const comps = await dbClient.all(`SELECT id, idx, capacity FROM compartments WHERE location_id = ?`, [loc.id]);
+    const startSlot = compartmentStartSlots(comps).get(Number(compartmentId));
+    const capacity = comps.find(c => c.id === Number(compartmentId)).capacity;
+    if (startSlot <= lastReservedSlot(ranges)) {
+      positions = fixedPagePositions(cards, { ranges, startSlot, capacity, allowStacking: !!loc.allow_stacking });
+    }
+  }
+  if (!positions) {
+    positions = new Map(sortCards(cards, sortOrder, foilSorting).map((card, idx) => [card.id, (idx + 1) * 1000]));
+  }
+
+  const entries = [...positions];
   const CHUNK_SIZE = 100;
-  for (let i = 0; i < sorted.length; i += CHUNK_SIZE) {
-    const chunk = sorted.slice(i, i + CHUNK_SIZE);
+  for (let i = 0; i < entries.length; i += CHUNK_SIZE) {
+    const chunk = entries.slice(i, i + CHUNK_SIZE);
     let posCaseStr = 'CASE id ';
     const params = [];
     const ids = [];
 
-    chunk.forEach((card, idx) => {
-      const newPos = (i + idx + 1) * 1000;
+    chunk.forEach(([id, newPos]) => {
       posCaseStr += `WHEN ? THEN ? `;
-      params.push(card.id, newPos);
-      ids.push(card.id);
+      params.push(id, newPos);
+      ids.push(id);
     });
     posCaseStr += 'END';
 
@@ -693,5 +867,9 @@ module.exports = {
   prepareCardMetadata,
   safeJsonParse,
   stackKey,
-  STACK_KEY_SQL
+  STACK_KEY_SQL,
+  normalizeFixedSlots,
+  fixedSlotRanges,
+  fixedSlotFor,
+  fixedPagePositions
 };
