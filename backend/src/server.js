@@ -182,13 +182,36 @@ function isAllowedOrigin(origin) {
   return explicitOrigins.includes(origin);
 }
 
-app.use(cors({
-  origin: (origin, callback) => {
-    if (isAllowedOrigin(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
+// True when the browser's Origin is exactly the host this request arrived on.
+//
+// A reverse proxy (EasyPanel/Traefik, nginx, Caddy, Tailscale Serve) publishes
+// the SPA and the API on the SAME public domain, but the browser still attaches
+// an Origin header to every write (POST/PUT/DELETE). That origin is the public
+// domain — neither a private/LAN origin nor, on a fresh install, listed in
+// CORS_ORIGIN — so until this existed the very first proxied login
+// (POST /api/auth/login) was answered 403 unless the operator also configured
+// PUBLIC_BASE_URL or CORS_ORIGIN. Same-origin is the normal case for the bundled
+// frontend, so recognize it directly, whatever the domain is and whichever host
+// header the proxy fills in. X-Forwarded-Host is preferred because a proxy may
+// rewrite Host.
+function isSameOrigin(req, origin) {
+  if (!origin) return false;
+  let originHost;
+  try { originHost = new URL(origin).host; } catch { return false; }
+  const forwardedHost = (req.headers['x-forwarded-host'] || '').split(',')[0].trim();
+  const host = forwardedHost || req.headers.host;
+  return Boolean(host) && originHost === host;
+}
+
+// cors() accepts a per-request delegate, which is what puts req in reach here;
+// the plain origin(origin, callback) form never receives it, so it cannot tell
+// the request's own public host apart from an arbitrary allowed domain.
+app.use(cors((req, callback) => {
+  const origin = req.headers.origin;
+  if (!origin || isSameOrigin(req, origin) || isAllowedOrigin(origin)) {
+    callback(null, { origin: true });
+  } else {
+    callback(new Error('Not allowed by CORS'));
   }
 }));
 // Two endpoints legitimately carry megabytes, and only two. An import wraps its

@@ -1,0 +1,58 @@
+# ---------------------------------------------------------------------------
+# Bindarr — despliegue en EasyPanel (Docker Compose)
+#
+# Úsalo al crear el servicio como "Compose" en EasyPanel, indicando esta ruta:
+#   docker-compose.easypanel.yml
+#
+# Se diferencia del docker-compose.yml del repo en las tres cosas que un host
+# gestionado por proxy necesita:
+#
+#   1. HTTPS_PORT=""  — El Traefik de EasyPanel ya termina el TLS con un
+#      certificado real, así que el contenedor sirve solo HTTP. El escaneo con
+#      cámara sigue funcionando porque el navegador llega por https://<dominio>:
+#      la app solo necesita un "contexto seguro" y da igual quién lo aporte.
+#   2. TRUST_PROXY=1  — Hace que Express confíe en X-Forwarded-For de Traefik,
+#      de modo que los limitadores de peticiones ven la IP real de cada cliente
+#      en vez de una única IP del proxy (si no, todos comparten el cupo de login).
+#   3. Sin puertos publicados + expose: 3001 — EasyPanel enruta el dominio al
+#      puerto 3001 interno; no se expone nada directamente en el host.
+#
+# Los datos viven en el volumen `bindarr-data` montado en /app/database: base de
+# datos SQLite (con su WAL), copias de seguridad, material TLS y los modelos y
+# catálogos de escaneo. No lo borres o perderás toda la colección.
+# ---------------------------------------------------------------------------
+services:
+  bindarr:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bindarr
+    restart: unless-stopped
+    environment:
+      - PORT=3001
+      # Vacío = solo HTTP; Traefik termina el TLS por delante. Pon 3443 solo si
+      # quieres además el listener HTTPS autofirmado propio de la app.
+      - HTTPS_PORT=
+      - DB_PATH=/app/database/bindarr.db
+      - CV_MODEL_DIR=/app/database/models
+      # Un salto de proxy (el Traefik de EasyPanel). Necesario para IPs reales.
+      - TRUST_PROXY=1
+      # URL pública de este servicio, p. ej. https://cartas.tudominio.com .
+      # Se usa para los enlaces compartidos y se añade sola como origen CORS
+      # permitido. Opcional (el mismo origen ya se acepta), recomendada.
+      - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-}
+      # Orígenes extra permitidos, separados por comas. Opcional.
+      - CORS_ORIGIN=${CORS_ORIGIN:-}
+      # Opcional: crea la cuenta `admin` con esta contraseña en el primer
+      # arranque en vez de usar la pantalla de configuración del navegador.
+      # Solo se aplica mientras no exista ningún usuario.
+      - DEFAULT_ADMIN_PASSWORD=${DEFAULT_ADMIN_PASSWORD:-}
+      # Opcional: "true" permite que cualquiera se registre solo.
+      - ALLOW_REGISTRATION=${ALLOW_REGISTRATION:-}
+    expose:
+      - "3001"
+    volumes:
+      - bindarr-data:/app/database
+
+volumes:
+  bindarr-data:

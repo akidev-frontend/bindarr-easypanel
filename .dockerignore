@@ -33,3 +33,18 @@ logs
 
 # Agent / docs not needed at runtime
 CLAUDE.md
+
+# Never used by the container build. Stage 1 only needs `frontend/` (minus the
+# native shells and its build output) plus `shared/`; leaving these in the build
+# context made every Easypanel build upload and copy tens of MB of Android/iOS
+# assets and screenshots for nothing — noticeable on a VPS.
+frontend/android
+frontend/ios
+docs
+AGENTS.md
+MOBILE.md
+PRIVACY.md
+PROJECT.md
+CHANGELOG.md
+README.md
+
