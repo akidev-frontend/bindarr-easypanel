@@ -2,27 +2,61 @@
 
 <img src="frontend/public/logo.svg" width="120" height="120" alt="" />
 
-# Bindarr
+# Bindarr — port no oficial para EasyPanel
 
-**Self-hosted collection manager for Pokémon, Magic: The Gathering, and Disney Lorcana cards.**
+**Gestor self-hosted de colecciones de cartas Pokémon, Magic: The Gathering y Disney Lorcana.**
 
-Identify cards with your phone camera, track prices, record which binder page and slot each card lives in, and pull decks back out again.
+Identifica cartas con la cámara del móvil, sigue precios, registra en qué página y hueco del binder vive cada carta, y vuelve a sacar los mazos.
 
-[![CI](https://img.shields.io/github/actions/workflow/status/thenotoriousJeremy/bindarr/docker-build.yml?branch=main&label=CI&logo=github)](https://github.com/thenotoriousJeremy/bindarr/actions/workflows/docker-build.yml)
-[![Docker image](https://img.shields.io/badge/ghcr.io-bindarr-2496ED?logo=docker&logoColor=white)](https://github.com/thenotoriousJeremy/bindarr/pkgs/container/bindarr)
-[![License: MIT](https://img.shields.io/github/license/thenotoriousJeremy/bindarr?color=blue)](LICENSE)
-[![Stars](https://img.shields.io/github/stars/thenotoriousJeremy/bindarr?style=flat&logo=github)](https://github.com/thenotoriousJeremy/bindarr/stargazers)
-[![Issues](https://img.shields.io/github/issues/thenotoriousJeremy/bindarr)](https://github.com/thenotoriousJeremy/bindarr/issues)
+[![License: MIT](https://img.shields.io/github/license/akidev-frontend/bindarr-easypanel?color=blue)](LICENSE)
+[![Despliegue: EasyPanel](https://img.shields.io/badge/deploy-EasyPanel-2496ED?logo=docker&logoColor=white)](EASYPANEL.md)
 
-[Live demo](https://thenotoriousjeremy.github.io/bindarr/) · [Install](#install) · [Features](#features) · [How it works](PROJECT.md) · [Report a bug](https://github.com/thenotoriousJeremy/bindarr/issues/new)
+[Guía de EasyPanel](EASYPANEL.md) · [Instalación](#install) · [Funciones](#features) · [Cómo funciona](PROJECT.md)
 
 </div>
 
 ---
 
+> ## ⚠️ Port no oficial
+>
+> Este repositorio es una **copia no oficial** de
+> **[thenotoriousJeremy/bindarr](https://github.com/thenotoriousJeremy/bindarr)**,
+> adaptada para desplegarse en un VPS gestionado por **EasyPanel (Docker)**.
+>
+> **No está afiliado, respaldado ni mantenido por el autor del proyecto original.**
+> Todo el mérito, el diseño y el desarrollo del proyecto son suyos. Para la versión
+> oficial, soporte y novedades usa el repositorio original:
+> **<https://github.com/thenotoriousJeremy/bindarr>**.
+>
+> Salvo que un fallo sea **específico de esta adaptación** (el arreglo de CORS, la
+> configuración de EasyPanel o el empaquetado), repórtalo en el
+> [repo original](https://github.com/thenotoriousJeremy/bindarr/issues). Este port
+> se ofrece "tal cual", como una comodidad para EasyPanel.
+
+### Qué cambia respecto al original
+
+- **Arreglo de CORS**: la app funciona detrás de un dominio o proxy (EasyPanel,
+  Nginx, Traefik, Caddy…) sin tener que configurar `CORS_ORIGIN`/`PUBLIC_BASE_URL`;
+  el login ya no devuelve `403`. Los orígenes externos siguen bloqueados.
+- **Configuración lista para EasyPanel**: [`docker-compose.easypanel.yml`](docker-compose.easypanel.yml),
+  [`.env.easypanel.example`](.env.easypanel.example) y la guía [`EASYPANEL.md`](EASYPANEL.md).
+- **Build más ligero**: `.dockerignore` excluye las shells móviles (`frontend/android`,
+  `frontend/ios`) y la documentación, para que el build en un VPS sea más rápido.
+- **CI del original retirado**: los workflows de GitHub Actions del proyecto original
+  se quitaron del historial (no hacen falta para desplegar y exigían permisos extra).
+
+Para el desarrollo, la arquitectura y el pipeline de escaneo, la documentación del
+original sigue siendo la referencia: [PROJECT.md](PROJECT.md) y el
+[README oficial](https://github.com/thenotoriousJeremy/bindarr).
+
+---
+
 https://github.com/user-attachments/assets/4ee6c23f-a024-499b-9fc3-3d144c42ba61
 
-Try it without installing anything at **[thenotoriousjeremy.github.io/bindarr](https://thenotoriousjeremy.github.io/bindarr/)**. The demo runs the real frontend against sample data, so edits aren't saved and scanning is off (it needs a server).
+Hay una demo del proyecto original en
+**[thenotoriousjeremy.github.io/bindarr](https://thenotoriousjeremy.github.io/bindarr/)**.
+La demo usa el frontend real con datos de ejemplo, así que los cambios no se guardan
+y el escaneo está desactivado (necesita un servidor).
 
 ---
 
@@ -76,7 +110,37 @@ plus and minus controls to scale card images from 60% to 250%.
 
 ## Install
 
-### Docker (recommended)
+### EasyPanel (recomendado en este port)
+
+Esta copia está pensada para desplegarse en un VPS con **EasyPanel**. La guía
+completa está en [`EASYPANEL.md`](EASYPANEL.md); resumen:
+
+1. En EasyPanel crea un servicio **Compose** apuntando a este repositorio y usa
+   como ruta del compose **`docker-compose.easypanel.yml`**.
+2. En **Domains**, apunta tu dominio al puerto interno **3001**.
+3. (Opcional) define `PUBLIC_BASE_URL` y `DEFAULT_ADMIN_PASSWORD`.
+4. Para tener escaneo, descarga los modelos y **construye un catálogo**:
+
+   ```sh
+   docker exec bindarr node scripts/fetch-models.mjs
+   ```
+
+   y después, en la app, **Admin → Scan catalogs** para construir un catálogo
+   local del juego que coleccionas.
+
+> **Sin catálogo no hay escaneo.** Los modelos solo detectan dónde está la carta y
+> convierten su arte en un vector; la identificación es el coseno contra el
+> catálogo. Si nunca construyes uno, el escaneo responde con un aviso en vez de
+> adivinar. Construir un catálogo local de tus sets tarda minutos; el juego entero,
+> horas (se puede acotar por sets desde el panel).
+
+### Docker (método original del proyecto)
+
+> Si usas la imagen precompilada `ghcr.io/thenotoriousjeremy/bindarr` estás usando
+> el **proyecto original**, no este port: no incluye el arreglo de CORS, así que
+> detrás de un dominio tendrás que definir `PUBLIC_BASE_URL` o `CORS_ORIGIN` para
+> poder iniciar sesión. Para este port, construye desde el `Dockerfile` de este
+> repositorio (el `docker-compose.yml` incluido ya usa `build:`).
 
 No clone, no build. Create a `docker-compose.yml`:
 
@@ -291,7 +355,7 @@ docker exec bindarr node scripts/fetch-models.mjs
 startup and scanning returns a clear error instead of guesses.
 
 **2. A catalog.** The fingerprint has to be compared against something. Build one
-per game and language from **Admin → Catalogs**: it downloads that game's card
+per game and language from **Admin → Scan catalogs**: it downloads that game's card
 list and fingerprints every card's artwork — hours for a full English game, and
 about 5 MB of output per 10,000 cards. Progress is live, stopping keeps what it
 has, and resuming reuses it. `--catalogs` on the fetch command above grabs
@@ -416,4 +480,16 @@ This is the language of the *app*. The language a card was printed in is a separ
 
 ## License
 
-[MIT](LICENSE).
+[MIT](LICENSE), igual que el proyecto original.
+
+## Créditos y atribución
+
+- Proyecto original: **[Bindarr](https://github.com/thenotoriousJeremy/bindarr)**,
+  creado por [thenotoriousJeremy](https://github.com/thenotoriousJeremy) y sus
+  colaboradores. Licencia MIT.
+- Los modelos de escaneo (`cornelius` y `milo`) son **AGPL-3.0** y **no** se
+  incluyen en este repositorio ni en la imagen Docker: los descarga aparte quien
+  despliega la instancia.
+- **Este port no oficial** solo añade compatibilidad con EasyPanel/proxy,
+  configuración de despliegue y empaquetado. No reclama ningún crédito sobre el
+  trabajo del proyecto original.
