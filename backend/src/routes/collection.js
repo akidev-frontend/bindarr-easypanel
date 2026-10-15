@@ -4,6 +4,7 @@ const tcgApi = require('../tcgApi');
 const tcgdexApi = require('../tcgdexApi');
 const scryfallApi = require('../scryfallApi');
 const lorcastApi = require('../lorcastApi');
+const tcgexchangeApi = require('../tcgexchangeApi');
 const visionApi = require('../utils/visionApi');
 const languages = require('../utils/languages');
 const pokemonProvider = require('../utils/pokemonProvider');
@@ -220,6 +221,13 @@ router.get('/collection/cert/:certNumber', searchLimiter, async (req, res) => {
 async function localizedPokemon(card, langName) {
   if (!card || languages.isEnglish(langName)) return card;
   if (card.language === langName) return card;
+  // Korean: TCGdex has no Korean sets or images, so the bundled Korean catalog
+  // is the only place a Korean printing exists. (Candidates for a Korean scan
+  // are already Korean, so this fires only when an English fallback came through.)
+  if (languages.toCode(langName) === 'ko') {
+    const ko = await tcgexchangeApi.findPrinting(card.name, card.number).catch(() => null);
+    return ko || { ...card, langFallback: langName };
+  }
   const localized = await tcgdexApi.getPrintingInLang(card.id, langName).catch(() => null);
   return localized || { ...card, langFallback: langName };
 }
@@ -229,30 +237,44 @@ async function localizedPokemon(card, langName) {
 // The vision model returns a name, an optional set code and a collector number;
 // the providers return the actual printings. Tried most specific first —
 // set+number, then name+number, then name alone — because a hallucinated set code
-// still leaves a perfectly good name search underneath it. Pokemon is always
-// searched in English (the model's `name` is English, and Japanese/Korean/Chinese
-// sets share no id with their English counterparts); the caller re-expresses the
-// result in the scanned language afterwards.
-async function searchByIdentity(identified, game, tcgApiKey) {
+// still leaves a perfectly good name search underneath it.
+//
+// Which provider: a KOREAN scan is searched against the bundled Korean catalog
+// first (that is the only way to reach Korea-exclusive cards and to get the
+// Korean name/art), with the English/TCGdex provider as a fallback for a Korean
+// card that also exists in English. Every other language searches English — the
+// model's `name` is English — and the caller re-expresses the result in the
+// scanned language afterwards.
+async function searchByIdentity(identified, game, langName, tcgApiKey) {
   const name = identified.name || identified.printed_name || '';
   if (!name) return [];
   const number = identified.number || '';
   const set = identified.set_code || '';
-  const api = game === 'mtg' ? scryfallApi : (game === 'lorcana' ? lorcastApi : await pokemonApiFor('English'));
+
+  const providers = [];
+  if (game === 'mtg') providers.push({ api: scryfallApi, lang: 'en' });
+  else if (game === 'lorcana') providers.push({ api: lorcastApi, lang: 'en' });
+  else {
+    if (languages.toCode(langName) === 'ko') providers.push({ api: await pokemonApiFor('Korean'), lang: 'ko' });
+    providers.push({ api: await pokemonApiFor('English'), lang: 'en' });
+  }
 
   const attempts = [];
   if (number) attempts.push({ name, number, set });
   if (number && set) attempts.push({ name, number });
   attempts.push({ name });
-  for (const attempt of attempts) {
-    try {
-      const { cards } = await api.searchCards({
-        ...attempt, lang: 'en', apiKey: tcgApiKey, allPrints: true, limit: 12,
-      });
-      if (cards && cards.length) return cards;
-    } catch (e) {
-      // A provider hiccup on one attempt must not stop the next, more general one.
-      console.warn(`scan-match search failed (${game}):`, e.message);
+
+  for (const { api, lang } of providers) {
+    for (const attempt of attempts) {
+      try {
+        const { cards } = await api.searchCards({
+          ...attempt, lang, apiKey: tcgApiKey, allPrints: true, limit: 12,
+        });
+        if (cards && cards.length) return cards;
+      } catch (e) {
+        // A provider hiccup on one attempt must not stop the next, more general one.
+        console.warn(`scan-match search failed (${game}/${lang}):`, e.message);
+      }
     }
   }
   return [];
@@ -313,7 +335,7 @@ router.post('/scan-match', searchLimiter, async (req, res) => {
     // when it names a game we support, otherwise keep the user's choice. Searching
     // the wrong provider answers with nothing useful.
     const resolvedGame = identified.game || game;
-    const cards = await searchByIdentity(identified, resolvedGame, req.user.tcg_api_key);
+    const cards = await searchByIdentity(identified, resolvedGame, langName, req.user.tcg_api_key);
     const ranked = rankCandidates(cards, identified);
 
     const confidence = identified.confidence == null ? null : identified.confidence;

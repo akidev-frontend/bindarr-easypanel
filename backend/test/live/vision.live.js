@@ -118,7 +118,21 @@ async function main() {
     assert.strictEqual(low.autoAdd, false, 'an unsure answer must not auto-add');
     assert.strictEqual(low.candidates.length, 1, 'the candidates stay on screen');
 
-    // 5. Unconfigured → 503 notBuilt with a message that names the fix.
+    // 5. A Korean scan resolves through the BUNDLED Korean catalog (no network):
+    // the model gives the English name, the route returns the Korean printing.
+    replyContent = JSON.stringify({ name: 'Pansage', set_code: '', number: '1', language: 'English', game: 'pokemon', confidence: 0.9 });
+    res = await fetch(`${base}/api/scan-match`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ game: 'pokemon', image, lang: 'ko' }),
+    });
+    const ko = await res.json();
+    assert.strictEqual(ko.engine, 'vision');
+    assert.ok(ko.candidates.length >= 1, 'a Korean scan must resolve a candidate');
+    assert.strictEqual(ko.candidates[0].card.language, 'Korean', 'the candidate must be the Korean printing');
+    assert.strictEqual(ko.candidates[0].card.printed_name, '야나프', 'the Korean name must be shown');
+    assert.match(ko.candidates[0].card.image_url, /^https:\/\//, 'the Korean image must be present');
+
+    // 6. Unconfigured → 503 notBuilt with a message that names the fix.
     delete process.env.VISION_API_KEY;
     delete process.env.VISION_BASE_URL;
     await db.run(`UPDATE app_settings SET vision_api_key = '', vision_base_url = '' WHERE id = 1`);
@@ -132,7 +146,7 @@ async function main() {
     assert.strictEqual(notBuilt.notBuilt, true);
     assert.match(notBuilt.error, /vision model/i);
 
-    // 6. A failing vision provider → 502 with the provider's own message, not a
+    // 7. A failing vision provider → 502 with the provider's own message, not a
     // blank 500. Reconfigure, then make the mock endpoint fail.
     process.env.VISION_BASE_URL = `http://127.0.0.1:${aiPort}/v1`;
     process.env.VISION_API_KEY = 'sk-live-test';
@@ -146,7 +160,7 @@ async function main() {
     assert.strictEqual(failed.visionError, true);
     assert.match(failed.error, /upstream boom/, 'the provider message is surfaced');
 
-    console.log('vision.live.js: all 19 assertions passed across 6 scenarios');
+    console.log('vision.live.js: all 24 assertions passed across 7 scenarios');
   } finally {
     scryfall.searchCards = realSearch;
     await new Promise((r) => server.close(r));

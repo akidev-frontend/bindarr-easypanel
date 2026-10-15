@@ -183,6 +183,20 @@ Levanta un endpoint de IA falso (OpenAI-compatible) y el servidor HTTP real, y v
 
 Verificado también dentro de Docker: la imagen arranca `healthy`, `/api/settings` expone `vision_*` (sin devolver la clave), y con un endpoint de IA mock alcanzable por la red Docker el flujo completo funciona — `POST /api/scan-match` identifica con la IA, resuelve la impresión contra el proveedor y `POST /api/collection` guarda la copia. Las variables `VISION_BASE_URL` / `VISION_MODEL` / `VISION_API_KEY` están documentadas en `docker-compose.yml` y `.env.example`.
 
+### Cartas coreanas: catálogo bundleado
+
+Corea es un caso aparte: TCGdex sirve metadatos coreanos pero **cero imágenes** (`assets.tcgdex.net/ko/*` da 404) y los sets coreanos son propios (no ediciones localizadas). Por eso el catálogo de embeddings antiguo saltaba todos los sets coreanos.
+
+Ahora Corea va **bundleada** en la app:
+
+- `shared/pokemonKoreaCatalog.json` (generado por `backend/scripts/fetch-korea-catalog.mjs` desde `api.tcgexchange.kr`): 271 sets y ~20.000 cartas, con `[set_code, number, name (inglés), name_ko (coreano), rarity, image_url]`. ~2,4 MB, incluido en la imagen Docker (`COPY shared/`).
+- `backend/src/tcgexchangeApi.js` sirve `listSets` / `getCardsBySet` / `searchCards` / `getCardById` desde ese fichero, **sin red y sin clave**; la API en vivo solo queda como respaldo si falta el fichero. Añade `findPrinting(name, number)`.
+- `utils/pokemonProvider` ya enruta `ko` → `tcgexchange` (regla única, no branching por idioma).
+- **Escaneo coreano**: `routes/collection.js` (`searchByIdentity`) busca en el proveedor coreano primero cuando el idioma es `ko`, así que la IA identifica el nombre en inglés y se resuelve la **impresión coreana real** (nombre/arte coreanos); el proveedor inglés queda como respaldo.
+- Ids: `tcgexchange-kr-<setCode>-<number>` (p. ej. `tcgexchange-kr-SV4K-001`), despachados por `utils/cardApi.js`.
+
+Regenerar el catálogo (solo si quieres refrescarlo): `cd backend && node scripts/fetch-korea-catalog.mjs`.
+
 ---
 
 ## Convenciones y Reglas de Negocio Críticas

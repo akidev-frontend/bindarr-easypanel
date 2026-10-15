@@ -1,14 +1,18 @@
-// tcgexchange.kr: Korean card provider.
+// tcgexchange.kr: Korean card provider (bundled catalog).
 //
 // Verifies:
 //   1. pokemonProvider routes 'ko' to tcgexchange, every other language unchanged.
-//   2. tcgexchangeApi.listSets returns ≥ 100 Korean sets with card counts.
+//   2. tcgexchangeApi.listSets returns the bundled Korean sets with card counts.
 //   3. tcgexchangeApi.getCardsBySet returns cards with image_url, normalized shape.
 //   4. cardApi dispatches tcgexchange-kr- ids to tcgexchangeApi.
 //   5. printingInLanguage returns null for tcgexchange ids (no cross-provider swap).
+//   6. findPrinting resolves a Korean printing by English name + number.
 //
-// Needs network (tcgexchange.kr). Skips gracefully if unreachable.
+// Offline: reads shared/pokemonKoreaCatalog.json. Falls back to the live API only
+// if the bundle is missing.
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
 
 process.env.DB_PATH = require('path').join(
   require('os').tmpdir(), `bindarr-tcgexchange-${process.pid}.db`
@@ -54,6 +58,9 @@ process.env.DB_PATH = require('path').join(
   // 4. printingInLanguage returns null for tcgexchange ids (never asks TCGdex to
   //    swap a tcgexchange id; the early return at the top handles same-language).
   const tcgex = require('../src/tcgexchangeApi');
+  // The catalog is bundled with the app — Korean support must not need a download.
+  assert.ok(fs.existsSync(tcgex.BUNDLE_PATH), 'shared/pokemonKoreaCatalog.json must be present');
+  console.log('PASS: bundled Korean catalog present');
   const nullResult = await cardApi.printingInLanguage(
     { id: 'tcgexchange-kr-SV4K-001', language: 'Korean', set_id: 'SV4K', number: '001', name: 'Pansage' },
     'English'
@@ -108,6 +115,14 @@ process.env.DB_PATH = require('path').join(
   assert.ok(found.cards.length >= 1, 'set-scoped search must find the card');
   assert.ok(found.cards.some(c => c.number === first.number), 'found card must match the number');
   console.log('PASS: searchCards finds a card by set + number');
+
+  // findPrinting: the scan route's path from an English identity to the Korean card.
+  const pansage = await tcgex.findPrinting('Pansage', '001');
+  assert.ok(pansage, 'findPrinting must resolve a Korean printing by English name');
+  assert.strictEqual(pansage.printed_name, '야나프', 'the Korean name must come back as printed_name');
+  assert.strictEqual(pansage.language, 'Korean');
+  assert.ok(pansage.image_url.startsWith('https://'), 'the Korean image must be present');
+  console.log('PASS: findPrinting resolves the Korean printing by English name + number');
 
   console.log('tcgexchange.test.js: all assertions passed');
 })().catch(e => {
