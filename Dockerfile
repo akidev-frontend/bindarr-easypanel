@@ -46,11 +46,13 @@ ENV HTTPS_PORT=3443
 # Upgrades from an image that used pokemon_cards.db keep their data: the app
 # renames the old file (and its WAL sidecars) into place on first start.
 ENV DB_PATH=/app/database/bindarr.db
-# Scan models and catalogs live on the persisted volume, both so a build has a
-# writable target under the non-root `node` user and so an image update does not
-# discard them. The two ONNX models are NOT in the image — they are AGPL-3.0 while
-# Bindarr is MIT, so the operator fetches them into this directory deliberately:
+# The scan detector lives on the persisted volume, both so it has a writable
+# target under the non-root `node` user and so an image update does not discard
+# it. The ONNX detector is NOT in the image — it is AGPL-3.0 while Bindarr is
+# MIT, so the operator fetches it into this directory deliberately:
 #   docker exec <container> node scripts/fetch-models.mjs
+# Card IDENTIFICATION is a vision model configured at runtime (VISION_* or
+# Admin → Instance Settings), not a file in this volume.
 ENV CV_MODEL_DIR=/app/database/models
 
 # Create database volume mount target directory. Nothing else: a subdirectory
@@ -78,10 +80,9 @@ RUN npm rebuild sqlite3 --build-from-source
 # Copy backend source files
 COPY backend/src/ ./src/
 
-# Nothing here is on a runtime path — the whole index build lives in src/ — but
-# these are the operator's escape hatches inside a running container:
-# eval-global-index.mjs measures what the index actually identifies, and
-# cardSources.js is what it resolves reference images through.
+# These are the operator's escape hatches inside a running container:
+# fetch-models.mjs pulls the corner detector, and cardSources.js resolves the
+# reference images the diagnostic scripts read.
 COPY backend/scripts/ ./scripts/
 
 # Shared JSON tables required at runtime by backend/src/utils/compartmentSort.js

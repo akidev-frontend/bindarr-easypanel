@@ -21,19 +21,16 @@ import SetTree from './SetTree';
 // Centered card-shaped guide box, styled in CSS (.scan-card-guide): card ratio
 // with margin, centered by the overlay's flex. The crop maps the box's on-screen
 // rect (getBoundingClientRect) into the frame, so its size is driven by CSS.
-// Confidence gates for the server match. When ORB geometric verification ran
-// (verified=true), gate on inlier count; otherwise on CLIP cosine similarity.
-// Below the gate the scan shows the candidates for manual selection.
+// Confidence gates for the server match, used by the debug readout. The server
+// decides auto-add itself (an explicit `autoAdd` flag); these only colour the
+// diagnostic rows.
 const SCAN_MATCH_MIN_SCORE = 0.55;
 const SCAN_MATCH_MIN_INLIERS = 12;
-// Minimum cosine gap between the top two embedding matches. Below it the model
-// is saying "one of these", not "this one", and the picker is the right answer.
-const SCAN_MATCH_MIN_MARGIN = 0.02;
 // Margin around the guide box when cropping. The box is an aim hint and a card
 // can overhang it, so the crop runs slightly wider than the box itself.
 const CROP_PAD = 0.05;
-// milo's input, and so the size of the crop the client uploads. Must match
-// cvScan's EMBED_SIZE — the catalog was embedded at this size.
+// The size of the rectified card the client uploads and the corner detector works
+// from. A clean square card reads well for the vision model too.
 const EMBED_SIZE = 448;
 // Live-outline cadence. Detection is local, so this is bounded by CPU rather
 // than by a network round trip: ~80ms per frame on a desktop, ~300ms on a phone.
@@ -264,12 +261,6 @@ function CameraScanner({ onAddSuccess, showToast }) {
   const scanSetParam = scanSetCodes.join(',');
   const [setInput, setSetInput] = useState('');
   const [setList, setSetList] = useState([]);        // {id,name,children[],...} for the active game
-  // Per-set catalog coverage: { local, published, sets: { <setId>: {cached,embedded} } }.
-  const [scanSets, setScanSets] = useState(null);
-  const [localHintOff, setLocalHintOff] = useState(() => localStorage.getItem('scan_local_hint') === 'off');
-  // Hide sets the scanner holds nothing for. On by default: a filter that lists
-  // 523 sets when 40 are built is a menu of mostly wrong answers.
-  const [onlyBuiltSets, setOnlyBuiltSets] = useState(true);
   // Code fed to the scanner: pokemontcg.io set id as-is; for MTG the bare
   // Scryfall code (sets.id is stored prefixed as "mtg-<code>").
   const setScanCode = (s) => scanGame === 'mtg' ? (s.ptcgo_code || (s.id || '').replace(/^mtg-/, '')) : s.id;
@@ -294,32 +285,12 @@ function CameraScanner({ onAddSuccess, showToast }) {
       ? dropCodes(scanSetCodes, [code, ...kids])
       : [...dropCodes(scanSetCodes, [code, ...kids]), code, ...kids]);
   };
-  // Sets the catalog knows about that the set table does not list at all. For
-  // Pokemon that is 51 of 172 cached set ids (TCG Pocket, TCGdex-only numbering),
-  // and without this they are unreachable from the filter — the user can see the
-  // cards in their collection but can never scope a scan to them.
-  // Which languages this game has a catalog of its own in. Empty until /scan-sets
-  // answers, and every check below treats empty as "do not claim anything".
-  const scanBuiltLangs = scanSets?.builtLangs || [];
-  // Worth saying once: a published catalog names cards by a PROVIDER id, so every
-  // new card costs a call to that provider before it can be shown (measured 971 to
-  // 1963 ms for Pokémon, 164 ms for MTG). A locally built catalog is keyed by this
-  // install's own card ids, so the same answer is a primary-key read — ~1 ms.
-  //
-  // Shown only when it is true for what is being scanned right now: a published
-  // catalog is answering and no local one exists. Dismissal sticks, because this is
-  // information, not a nag, and it is the same sentence every time.
-  const showLocalHint = !!scanSets && !scanSets.local && !!scanSets.published && !localHintOff;
+  // Sets the catalog knows about that the set table does not list at all.
   const currentGameSets = setList.filter(s => !s.game || s.game === scanGame);
-  const strayCatalogSets = (scanSets?.game === scanGame ? Object.entries(scanSets?.sets || {}) : [])
-    .filter(([sid, v]) => v.embedded > 0
-      && !currentGameSets.some(s => String(setScanCode(s)).toLowerCase() === sid
-        || (s.children || []).some(c => String(c.code).toLowerCase() === sid)))
-    .map(([sid]) => ({ id: sid, name: sid.toUpperCase(), ptcgo_code: sid, children: [] }));
   // Newest first: a scanning run is nearly always a recent release, and the set
   // list arrives in release order. Searching and coverage filtering happen inside
   // SetTree, which the build picker and the wizard share.
-  const treeSets = [...currentGameSets, ...strayCatalogSets].reverse();
+  const treeSets = [...currentGameSets].reverse();
   // Families the filter names, for the summary line — 3 sets reads better than the
   // 41 codes they expand to.
   const selectedSetCount = currentGameSets.filter(s => hasCode(setScanCode(s))).length;
@@ -536,7 +507,6 @@ function CameraScanner({ onAddSuccess, showToast }) {
     setScanSetCodesState((localStorage.getItem(setsKey(scanGame, scanLang)) || '').split(',').map(s => s.trim()).filter(Boolean));
     setSetInput('');
     setSetList([]);
-    setScanSets(null);
     setDebugCandidates([]);
     setDebugHashImg('');
     setDebugScoped(null);
@@ -550,19 +520,6 @@ function CameraScanner({ onAddSuccess, showToast }) {
       })
       .catch(() => {
         if (!cancelled) setSetList([]);
-      });
-
-    // How much of each set the scanner actually holds. Without this the filter
-    // offers sets that match NOTHING — Pokemon's set table is pokemontcg.io's
-    // numbering while the catalog is keyed by TCGdex's, and a filter that matches
-    // no rows makes cvScan fall back to an unscoped scan without saying so.
-    fetch(`/api/scan-sets?game=${scanGame}&lang=${encodeURIComponent(scanLang)}`)
-      .then(r => r.ok ? r.json() : null)
-      .then(data => {
-        if (!cancelled) setScanSets(data);
-      })
-      .catch(() => {
-        if (!cancelled) setScanSets(null);
       });
 
     return () => {
@@ -1149,12 +1106,11 @@ function CameraScanner({ onAddSuccess, showToast }) {
     return canvas;
   };
 
-  // Rectify the card out of a capture, into the square the embedder expects.
+  // Rectify the card out of a capture into a clean square.
   //
-  // Geometry identical to the server's dewarp (cvScan.detectAndDewarp): same
-  // square, same corner-to-corner mapping. It has to be — milo is measurably
-  // sensitive to how tight the crop is, so a client crop that framed the card
-  // differently would quietly cost accuracy rather than fail outright.
+  // The crop is sent to the vision model rather than matched locally, so the only
+  // requirement is that it frames the card and nothing else: the same
+  // corner-to-corner mapping the detector produced, applied to the captured frame.
   //
   // `quad` is normalised to the framed canvas in TL,TR,BR,BL order (the worker
   // already reorders cornelius's BL,BR,TL,TR). Returns null rather than a bad
@@ -1369,101 +1325,58 @@ function CameraScanner({ onAddSuccess, showToast }) {
             const resp = await fetch('/api/scan-match', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ game: scanGame, image: imageData, cropped: !!cropped, set: scanSetParam, lang: scanLang, recallK: profile.recallK, orb: profile.orb }),
+              body: JSON.stringify({ game: scanGame, image: imageData, cropped: !!cropped, set: scanSetParam, lang: scanLang }),
             });
             if (scanId !== currentScanId.current) return;
-            // A 503 here is the server saying no catalog exists for this game and
-            // language, with an error that names the fix. It used to fall straight
-            // through to "no confident match", so the one message that could have
-            // told an admin what to do was never shown.
+            // A 503 here is the server saying no vision model is configured, with
+            // an error that names the fix. It used to fall straight through to
+            // "no confident match", so the one message that could have told an
+            // admin what to do was never shown.
             if (!resp.ok) {
               const j = await resp.json().catch(() => null);
               if (scanId !== currentScanId.current) return;
               if (j?.notBuilt) {
-                setScanStatus(t('scan.catalogNotBuilt'));
+                setScanStatus(t('scan.visionNotConfigured'));
+                signal('error');
+                return;
+              }
+              if (j?.visionError) {
+                setScanStatus(t('scan.visionError', { message: j.error || '' }));
                 signal('error');
                 return;
               }
             }
             if (resp.ok) {
-              const { game: matchGame, verified, candidates, crop, scoped, notInCatalog, unresolvedPublished } = await resp.json();
-              console.log('Scan candidates:', matchGame, scanLang, scoped ? `(set-scoped ${scanSetParam})` : '(GLOBAL)', verified ? 'ORB' : 'CLIP', candidates);
-              if (crop) setDebugHashImg(crop); // show the server's auto-cropped card
-              setDebugScoped(scoped ? scanSetParam : false);
-              setDebugCandidates((candidates || []).map(c => ({ ...c, verified })));
-              const top = candidates && candidates[0];
-              const confident = top && (verified ? top.inliers >= SCAN_MATCH_MIN_INLIERS : top.score >= SCAN_MATCH_MIN_SCORE);
-              // Printing ambiguity: basic lands (and other low-art cards) share one
-              // big symbol + frame, so ORB scores nearly tie across every printing
-              // of the same card. A near-tied same-name runner-up means the image
-              // can't tell the printings apart — so DON'T auto-add the top pick's
-              // set; fall through to the picker and let the user choose the set.
-              const second = candidates && candidates[1];
-              const ambiguousPrinting = top && second && top.name === second.name
-                && (top.set !== second.set || top.number !== second.number)
-                && (verified ? second.inliers >= top.inliers * 0.7 : second.score >= top.score - 0.02);
-              // Embedding matches fail differently from ORB ones: a wrong answer
-              // can carry a HIGH cosine (0.88 on the eval sample) while sitting a
-              // hair above the runner-up, because the two cards genuinely look
-              // alike. Absolute similarity cannot separate those; the margin can.
-              // This is deliberately name-blind — the confident wrong answers were
-              // different cards, which ambiguousPrinting above never catches.
-              const lowMargin = !verified && top && second
-                && (top.score - second.score) < SCAN_MATCH_MIN_MARGIN;
-              // The server says nothing in any catalog resembles this card, so the
-              // candidates below are the nearest strangers rather than a shortlist.
-              // Auto-add is exactly wrong here — a card the catalog has never heard
-              // of is the one case where a high cosine and a clean margin prove
-              // nothing — but the list still goes on screen: it costs the user one
-              // glance and beats claiming the card does not exist.
+              const { game: matchGame, candidates, autoAdd, vision, notInCatalog } = await resp.json();
+              console.log('Scan candidates:', matchGame, scanLang, vision, candidates);
+              setDebugScoped(scanSetCodes.length ? scanSetParam : false);
+              setDebugCandidates((candidates || []).map(c => ({ ...c, verified: false })));
               if (candidates && candidates.length > 0) {
-                // Resolve the WHOLE ORB list to real cards, once, and use it for
-                // both outcomes. The confident path used to resolve only the top
-                // pick, which meant the auto-add overlay had nothing to offer if
-                // it guessed wrong — and when scanning a whole set, the card in
-                // hand often is not ORB's first choice.
-                const confidentPick = confident && !ambiguousPrinting && !lowMargin && !notInCatalog;
-                // Turbo (countdown 0) adds instantly with no overlay, so there is
-                // nowhere to put alternatives — resolving eight cards per scan
-                // would be pure latency on the fastest tier. Everywhere else the
-                // whole list is resolved, because the countdown shows it.
-                const wanted = (confidentPick && profile.countdown === 0)
-                  ? candidates.slice(0, 1)
-                  : candidates.slice(0, 8);
-                // Only announce a fetch if one is actually needed; anything the
-                // server pre-hydrated resolves without a round-trip.
+                // Hydrate the whole list. The server pre-hydrates what it can; a
+                // candidate that came back as a bare name+set+number is resolved
+                // through the normal provider search here. Turbo (countdown 0) adds
+                // instantly with no overlay, so only the top pick is resolved on
+                // that tier — resolving eight would be pure latency.
+                const wanted = (autoAdd && profile.countdown === 0) ? candidates.slice(0, 1) : candidates.slice(0, 8);
                 if (wanted.some(c => !c.card)) setScanStatus(t('scan.fetchingCandidates'));
                 const resolved = await resolveCandidates(wanted, matchGame, scanLang);
                 if (scanId !== currentScanId.current) return;
                 const validCandidates = resolved.filter(Boolean);
-                // Remembered for the add drawer, which otherwise loses every
-                // alternative the moment a card is chosen.
                 setLastMatches(validCandidates);
 
                 if (validCandidates.length > 0) {
-                  // Confident: auto-add the top pick, but keep the rest on screen
-                  // beside the countdown so a wrong guess is one tap to correct
-                  // rather than an undo after the fact.
-                  if (confidentPick && sameCard(validCandidates[0], top)) {
+                  // The vision model was confident AND the printing it named was
+                  // found: auto-add the top pick, but keep the rest beside the
+                  // countdown so a wrong guess is one tap to correct rather than an
+                  // undo after the fact.
+                  if (autoAdd) {
                     setAutoAddAlternatives(validCandidates.slice(1));
                     await applyMatches([validCandidates[0]], '', true);
                     return;
                   }
                   setAutoAddAlternatives([]);
                   await applyMatches(validCandidates, '', false);
-                  // applyMatches clears the status line for a non-empty list, so
-                  // this has to land after it.
                   if (notInCatalog) setScanStatus(t('scan.notInCatalog'));
-                  return;
-                }
-                // The catalog matched and nothing could be named. Only the
-                // ready-made Pokémon catalog can end up here (its ids are
-                // TCGplayer product ids with no card data behind them), and
-                // "no confident match" would blame the photo for an install
-                // state the user can fix.
-                if (unresolvedPublished) {
-                  setScanStatus(t('scan.readyMadeUnresolved'));
-                  signal('error');
                   return;
                 }
               }
@@ -1949,39 +1862,19 @@ function CameraScanner({ onAddSuccess, showToast }) {
                   }}
                   style={{ fontSize: '0.8rem' }}
                 >
-                  {/* Marked, not hidden. Scanning a language with no catalog of
-                      its own still works — the English catalog identifies the
-                      card by artwork — but for Pokémon it cannot see the sets
-                      that never released in English, and it files the English
-                      printing. Offering eleven identical-looking options hid all
-                      of that until after the scan. */}
                   {getLanguagesForGame(scanGame).map(l => (
-                    <option key={l.code} value={l.code}>
-                      {l.name}{scanBuiltLangs.length && !scanBuiltLangs.includes(l.name)
-                        ? ` — ${t('scan.langNoCatalogTag')}` : ''}
-                    </option>
+                    <option key={l.code} value={l.code}>{l.name}</option>
                   ))}
                 </select>
               </div>
             </div>
-            {!!scanBuiltLangs.length && !scanBuiltLangs.includes(langName(scanLang)) && (
-              <p style={{
-                margin: '0.4rem 0 0', fontSize: '0.72rem', lineHeight: 1.4,
-                color: scanGame === 'pokemon' ? 'var(--accent-yellow)' : 'var(--text-muted)',
-              }}>
-                {t(scanGame === 'pokemon' ? 'scan.langNoCatalogPokemon' : 'scan.langNoCatalogMtg',
-                  { lang: langName(scanLang) })}
-              </p>
-            )}
 
-            {/* Filter by set. A scan scoped to the sets in front of you is measurably
-                more accurate (91% vs 81% exact printing on MTG), so this is a filter
-                over the catalog, not an index to build — nothing to wait for.
+            {/* Filter by set. The vision model reads the card itself, but a set
+                hint sharpens the answer when several sets share a card name.
                 Organised as the release family, because that is how the cards
                 physically arrive: ticking Foundations takes its tokens, art cards and
                 promos with it, and expanding it lets you drop the parts you are not
-                feeding in. Each subset is its own set code in the catalog, so an
-                unexpanded parent tick genuinely could not see a token. */}
+                feeding in. */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' }}>
                 <label htmlFor="scan-set-filter" style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.03em' }}>
@@ -2006,35 +1899,15 @@ function CameraScanner({ onAddSuccess, showToast }) {
                 placeholder={t(scanGame === 'mtg' ? 'scan.setSearchMtg' : 'scan.setSearchPokemon')}
                 style={{ padding: '0.35rem 0.5rem', fontSize: '0.75rem', background: 'rgba(255,255,255,0.06)', border: `1px solid ${scanSetCodes.length ? 'var(--type-grass)' : 'var(--border-glass)'}`, borderRadius: 'var(--radius-sm)', color: 'var(--text-strong)' }}
               />
-              {/* Scoping to a set the catalog does not hold is worse than not
-                  scoping at all: cvScan fails open and scans everything, so the
-                  filter appears to work and silently did nothing. */}
-              {scanSets?.local && (
-                <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.68rem', color: 'var(--text-secondary)', cursor: 'pointer' }}>
-                  <input
-                    type="checkbox"
-                    checked={onlyBuiltSets}
-                    onChange={(e) => setOnlyBuiltSets(e.target.checked)}
-                    style={{ accentColor: 'var(--type-grass)', flexShrink: 0 }}
-                  />
-                  {t('scan.onlyBuiltSets')}
-                </label>
-              )}
-              {scanSets?.published && (
-                <p style={{ fontSize: '0.66rem', color: 'var(--text-muted)', margin: 0 }}>{t('scan.publishedCatalogNote')}</p>
-              )}
-              {/* Shared with the catalog build picker and the first-run wizard:
-                  one implementation of "which sets?", three things done with the answer. */}
+              {/* Shared with the build picker and the first-run wizard: one
+                  implementation of "which sets?", three things done with the answer. */}
               <SetTree
                 sets={treeSets}
                 codeOf={setScanCode}
                 selected={scanSetCodes}
                 onToggleCode={toggleCode}
                 onToggleFamily={toggleSetFamily}
-                counts={scanSets?.sets}
-                showCounts={!!scanSets?.local}
                 query={setInput}
-                onlyWithCounts={onlyBuiltSets && !!scanSets?.local}
               />
             </div>
             {/* Live outline of what the detector currently sees. On by default:
@@ -2302,36 +2175,6 @@ function CameraScanner({ onAddSuccess, showToast }) {
               {!scanSetCodes.length && <span style={{ position: 'absolute', top: 4, right: 4, width: 7, height: 7, borderRadius: '50%', background: 'var(--accent-yellow)' }} />}
             </button>
           </div>
-        </div>
-      )}
-
-      {/* Top level, NOT inside the scan-settings panel: that panel is behind the
-          gear and closed by default, so a notice about how to make scanning faster
-          would only ever be read by someone already changing settings. Shown while a
-          ready-made catalog is answering and no local one exists for this game and
-          language, which is exactly when the advice applies — it disappears on its
-          own once a local catalog is built, and the X keeps it gone before then. */}
-      {showLocalHint && (
-        <div className="glass-panel" style={{
-          width: '100%', display: 'flex', alignItems: 'flex-start', gap: '0.6rem',
-          padding: '0.75rem 0.9rem', borderLeft: '3px solid var(--accent-blue, #60a5fa)',
-        }}>
-          <Zap size={16} style={{ color: 'var(--accent-blue, #60a5fa)', flexShrink: 0, marginTop: '0.1rem' }} />
-          <p style={{ fontSize: '0.78rem', lineHeight: 1.45, color: 'var(--text-secondary)', margin: 0, flex: 1 }}>
-            {t('scan.localCatalogSpeedHint')}
-          </p>
-          <button
-            type="button"
-            onClick={() => { setLocalHintOff(true); localStorage.setItem('scan_local_hint', 'off'); }}
-            aria-label={t('common.close')}
-            title={t('common.close')}
-            style={{
-              background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer',
-              padding: 0, lineHeight: 1, flexShrink: 0,
-            }}
-          >
-            <X size={14} />
-          </button>
         </div>
       )}
 

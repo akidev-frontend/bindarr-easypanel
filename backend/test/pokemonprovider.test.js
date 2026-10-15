@@ -17,7 +17,7 @@ const path = require('path');
 
 process.env.DB_PATH = path.join(os.tmpdir(), `bindarr-provider-${process.pid}.db`);
 const cardSets = require('../src/cardSets');
-const { decide, sunsetNotice, POKEMONTCG_SUNSET, TCGDEX, POKEMONTCG } = require('../src/utils/pokemonProvider');
+const { decide, sunsetNotice, POKEMONTCG_SUNSET, TCGDEX, POKEMONTCG, TCGEXCHANGE } = require('../src/utils/pokemonProvider');
 
 function testLanguageVeto() {
   // pokemontcg.io has no non-English cards at all, so the SETTING CANNOT WIN here.
@@ -25,10 +25,22 @@ function testLanguageVeto() {
   // Canonical codes only — these are what the UI sends (frontend/src/utils/
   // languages.js is kept in step with the backend list). Chinese is zh-tw/zh-cn
   // here; zh-Hans/zh-Hant are UI-locale filenames on a different axis entirely.
-  for (const lang of ['ja', 'de', 'fr', 'es', 'it', 'pt', 'ko', 'ru', 'zh-tw', 'zh-cn']) {
+  //
+  // Korean is the one exception: TCGdex serves Korean METADATA but ZERO Korean
+  // images (every assets.tcgdex.net/ko/ path 404s), so a TCGdex Korean catalog
+  // build skips all 95 sets ("no card data upstream"). tcgexchange.kr has all
+  // 271 addressable Korean sets WITH images, no key needed. It wins over every
+  // setting, same as the veto does for TCGdex over pokemontcg.io.
+  for (const lang of ['ja', 'de', 'fr', 'es', 'it', 'pt', 'ru', 'zh-tw', 'zh-cn']) {
     assert.strictEqual(decide(POKEMONTCG, lang), TCGDEX, `${lang} must use TCGdex even when pokemontcg.io is configured`);
     assert.strictEqual(decide(TCGDEX, lang), TCGDEX, `${lang} uses TCGdex`);
   }
+  // Korean routes to tcgexchange under every setting — no setting selects it.
+  for (const setting of [POKEMONTCG, TCGDEX, 'pokemontcgapi', undefined, null, 'nonsense']) {
+    assert.strictEqual(decide(setting, 'ko'), TCGEXCHANGE, `ko + ${JSON.stringify(setting)} must use tcgexchange`);
+  }
+  // Display-name spelling resolves the same way as the codes do.
+  assert.strictEqual(decide(POKEMONTCG, 'Korean'), TCGEXCHANGE, 'Korean resolves to tcgexchange');
   // Provider spellings resolve too, so a stored TCGdex/Scryfall code still routes.
   for (const lang of ['Japanese', 'zht', 'zhs']) {
     assert.strictEqual(decide(POKEMONTCG, lang), TCGDEX, `${lang} resolves to a non-English language`);

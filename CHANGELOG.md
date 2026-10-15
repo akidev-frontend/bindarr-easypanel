@@ -6,6 +6,10 @@ release also carries fuller notes on its
 
 ## [Unreleased]
 
+### Changed
+- **Card scanning now identifies cards with a generative vision model.** The scanner still detects the card locally (the `cornelius` corner model, so the live outline and auto-capture are unchanged), but the detected crop is sent to an OpenAI-compatible vision endpoint (`POST /chat/completions`) that returns the card's objective data as JSON — name, printed name, set, set code, collector number, language, game, rarity and a confidence. That identity is then resolved through the normal provider search and saved like any other card, so prices, storage, localization and the picker all work as before. Configure the endpoint, model and API key in Admin → Instance Settings, or with `VISION_BASE_URL` / `VISION_MODEL` / `VISION_API_KEY`. Works with OpenAI, Azure OpenAI, OpenRouter, Groq, and local servers (Ollama, LM Studio, vLLM).
+- **The embedding pipeline is gone.** The `milo` embedder, the per-game/language scan catalogs, the catalog builder, the `/api/scan-sets` counts and the `--catalogs` fetch option have been removed; scanning no longer needs a large index built on the server. `scripts/fetch-models.mjs` now downloads only the corner detector (~3.2 MB), and the scan settings no longer show catalog coverage.
+
 ## [1.8.7] - 2026-10-11
 
 ### Added

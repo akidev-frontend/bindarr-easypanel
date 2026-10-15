@@ -71,7 +71,10 @@ async function normalization() {
 async function routing() {
   assert.strictEqual(await policy.configured(), 'tcgdex', 'fresh-install default remains TCGdex');
   for (const lang of ['en', 'English', 'ja', 'Japanese', 'zh-cn', 'zhs']) assert.strictEqual(policy.decide('pokemontcgapi', lang), 'pokemontcgapi');
-  for (const lang of ['de', 'fr', 'it', 'es', 'ko', 'zh-tw']) assert.strictEqual(policy.decide('pokemontcgapi', lang), 'tcgdex');
+  for (const lang of ['de', 'fr', 'it', 'es', 'zh-tw']) assert.strictEqual(policy.decide('pokemontcgapi', lang), 'tcgdex');
+  // Korean is pinned to tcgexchange regardless of the setting (it has Korean
+  // images; TCGdex does not).
+  assert.strictEqual(policy.decide('pokemontcgapi', 'ko'), 'tcgexchange');
   assert.strictEqual(policy.decide('pokemontcg', 'en'), 'pokemontcg');
   assert.strictEqual(policy.decide('pokemontcg', 'ja'), 'tcgdex');
   assert.strictEqual(policy.decide('tcgdex', 'en'), 'tcgdex');
@@ -252,9 +255,7 @@ async function routes() {
   const server = await new Promise(resolve => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
   const base = `http://127.0.0.1:${server.address().port}`;
   const headers = { 'Content-Type': 'application/json', Authorization: 'Bearer fixture-session' };
-  const catalog = require('../src/tcgplayerCatalog');
   const sync = api.fetchAndCacheSets;
-  const start = catalog.start;
   try {
     let res = await fetch(base + '/api/settings', { method: 'PUT', headers: { ...headers, 'x-test-role': 'member' }, body: JSON.stringify({ pokemon_provider: 'pokemontcgapi' }) });
     assert.strictEqual(res.status, 403);
@@ -265,8 +266,9 @@ async function routes() {
     assert.strictEqual(await policy.configured(), 'tcgdex', 'failed activation cannot change the setting');
     process.env.POKEMONTCGAPI_KEY = key;
     let synced = false;
-    api.fetchAndCacheSets = async () => { synced = true; };
-    const followup = new Promise(resolve => { catalog.start = resolve; });
+    let resolveFollowup;
+    const followup = new Promise(resolve => { resolveFollowup = resolve; });
+    api.fetchAndCacheSets = async () => { synced = true; resolveFollowup(); };
     res = await fetch(base + '/api/settings', { method: 'PUT', headers, body: JSON.stringify({ pokemon_provider: 'pokemontcgapi' }) });
     assert.strictEqual(res.status, 200);
     assert.strictEqual((await res.json()).pokemon_provider, 'pokemontcgapi');
@@ -294,7 +296,6 @@ async function routes() {
     await db.run("UPDATE app_settings SET pokemon_provider = 'tcgdex'");
   } finally {
     api.fetchAndCacheSets = sync;
-    catalog.start = start;
     await new Promise(resolve => server.close(resolve));
   }
 }

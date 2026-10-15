@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Shield, UserPlus, Key, Trash2, ToggleLeft, ToggleRight, Search, Users, Globe, HardDriveDownload, Download, Sparkles } from 'lucide-react';
 import { useBackGuard } from '../utils/useBackGuard';
-import CatalogPanel from './CatalogPanel';
 import SetupWizard from './SetupWizard';
 import { currencySymbol } from '../utils/formatPrice';
 import { useT } from '../utils/i18n';
@@ -36,6 +35,12 @@ function AdminPanel({ user, onUpdateUser, showToast }) {
   const [publicBaseUrl, setPublicBaseUrl] = useState('');
   const [pokemonProvider, setPokemonProvider] = useState('pokemontcg');
   const [priceRefreshDays, setPriceRefreshDays] = useState(1);
+  // Vision model used to identify scanned cards. The key is never returned, only
+  // whether one is set; saving an empty key clears the override.
+  const [visionBaseUrl, setVisionBaseUrl] = useState('');
+  const [visionModel, setVisionModel] = useState('');
+  const [visionApiKey, setVisionApiKey] = useState('');
+  const [visionConfigured, setVisionConfigured] = useState(false);
   const [settingsLoading, setSettingsLoading] = useState(false);
   const mountedRef = useRef(true);
 
@@ -43,7 +48,7 @@ function AdminPanel({ user, onUpdateUser, showToast }) {
   const [backups, setBackups] = useState([]);
   const [backupLoading, setBackupLoading] = useState(false);
 
-  // Scan catalog management (and its own polling) lives in CatalogPanel now.
+  // Instance settings (incl. the vision model) load on mount.
   useEffect(() => {
     mountedRef.current = true;
     fetchUsers();
@@ -166,6 +171,9 @@ function AdminPanel({ user, onUpdateUser, showToast }) {
         setPublicBaseUrl(data.public_base_url || '');
         setPokemonProvider(data.pokemon_provider || 'pokemontcg');
         setPriceRefreshDays(data.price_refresh_days ?? 1);
+        setVisionBaseUrl(data.vision_base_url || '');
+        setVisionModel(data.vision_model || '');
+        setVisionConfigured(!!data.vision_configured);
       }
     } catch (err) {
       console.error(err);
@@ -183,6 +191,10 @@ function AdminPanel({ user, onUpdateUser, showToast }) {
           public_base_url: publicBaseUrl,
           pokemon_provider: pokemonProvider,
           price_refresh_days: Number(priceRefreshDays),
+          vision_base_url: visionBaseUrl,
+          vision_model: visionModel,
+          // Empty string clears the stored key (falls back to VISION_API_KEY).
+          vision_api_key: visionApiKey,
         })
       });
 
@@ -191,6 +203,10 @@ function AdminPanel({ user, onUpdateUser, showToast }) {
         setPublicBaseUrl(data.public_base_url || '');
         setPokemonProvider(data.pokemon_provider || 'pokemontcg');
         setPriceRefreshDays(data.price_refresh_days ?? 1);
+        setVisionBaseUrl(data.vision_base_url || '');
+        setVisionModel(data.vision_model || '');
+        setVisionConfigured(!!data.vision_configured);
+        setVisionApiKey('');   // never echo the key back
         showToast(t('admin.settingsUpdated'));
       } else {
         const data = await response.json();
@@ -504,16 +520,65 @@ function AdminPanel({ user, onUpdateUser, showToast }) {
                 {t('admin.priceRefreshHint')}
               </p>
             </div>
+            {/* Card scanning identification. The scanner detects the card
+                locally (cornelius), then asks this vision model to name it. Any
+                OpenAI-compatible /chat/completions endpoint works: OpenAI,
+                OpenRouter, Groq, or a local Ollama/LM Studio server. Leave the key
+                empty to fall back to VISION_API_KEY from the environment. */}
+            <div style={{ borderTop: '1px solid var(--border-glass)', paddingTop: '1rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' }}>
+                <span style={{ fontSize: '0.9rem', fontWeight: 700, color: 'var(--text-strong)' }}>{t('admin.visionTitle')}</span>
+                <span style={{ fontSize: '0.7rem', fontWeight: 700, color: visionConfigured ? 'var(--type-grass)' : 'var(--accent-yellow)' }}>
+                  {t(visionConfigured ? 'admin.visionConfigured' : 'admin.visionNotConfigured')}
+                </span>
+              </div>
+              <p style={{ margin: 0, fontSize: '0.75rem', color: 'var(--text-secondary)', lineHeight: 1.4 }}>
+                {t('admin.visionHint')}
+              </p>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label htmlFor="admin-vision-base-url">{t('admin.visionBaseUrl')}</label>
+                <input
+                  id="admin-vision-base-url"
+                  type="text"
+                  autoComplete="off"
+                  className="input-control"
+                  placeholder="https://api.openai.com/v1"
+                  value={visionBaseUrl}
+                  onChange={(e) => setVisionBaseUrl(e.target.value)}
+                  disabled={settingsLoading}
+                />
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label htmlFor="admin-vision-model">{t('admin.visionModel')}</label>
+                <input
+                  id="admin-vision-model"
+                  type="text"
+                  autoComplete="off"
+                  className="input-control"
+                  placeholder="gpt-4o-mini"
+                  value={visionModel}
+                  onChange={(e) => setVisionModel(e.target.value)}
+                  disabled={settingsLoading}
+                />
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label htmlFor="admin-vision-key">{t('admin.visionApiKey')}</label>
+                <input
+                  id="admin-vision-key"
+                  type="password"
+                  autoComplete="new-password"
+                  className="input-control"
+                  placeholder={visionConfigured ? t('admin.visionKeySet') : t('admin.visionKeyPlaceholder')}
+                  value={visionApiKey}
+                  onChange={(e) => setVisionApiKey(e.target.value)}
+                  disabled={settingsLoading}
+                />
+              </div>
+            </div>
             <button type="submit" className="btn btn-primary" style={{ padding: '0.6rem', fontWeight: 700, alignSelf: 'flex-start' }} disabled={settingsLoading}>
               {settingsLoading ? <div className="spinner" style={{ width: '14px', height: '14px', margin: 0, borderWidth: '2px' }}></div> : t('admin.saveSettings')}
             </button>
           </form>
-        </div>
-
-        {/* Scan catalogs. One build per game+language: download the cards, then index
-            their artwork. Replaced the per-set / whole-game ORB index panel. */}
-        <div className="glass-panel">
-          <CatalogPanel showToast={showToast} />
         </div>
 
         {/* Database Backup Panel */}

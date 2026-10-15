@@ -339,40 +339,33 @@ API contract and coverage: [documentation](https://pokemontcgapi.com/docs),
 
 ## Card scanning
 
-Scanning is image-only — no OCR, no typing. Two things have to be in place, and
-neither ships inside the app:
+Scanning is image-only — no OCR, no typing. It has two halves: a local detector
+finds the card, and a vision AI identifies it.
 
-**1. The models.** Two small neural networks (~9.6 MB together) find the card in
-the frame and turn its artwork into a fingerprint. They are AGPL-3.0 while Bindarr
-is MIT, so they are fetched deliberately rather than bundled:
+**1. The detector.** A small neural network (~3.2 MB) finds the card's corners in
+the frame so the scanner can draw the live outline and fire auto-capture. It is
+AGPL-3.0 while Bindarr is MIT, so it is fetched deliberately rather than bundled:
 
 ```bash
 docker exec bindarr node scripts/fetch-models.mjs
 ```
 
 (Running from source or the prebuilt binary: `node scripts/fetch-models.mjs` in
-`backend/`.) Restart afterwards. Until they are there, the server says so at
-startup and scanning returns a clear error instead of guesses.
+`backend/`.) Restart afterwards.
 
-**2. A catalog.** The fingerprint has to be compared against something. Build one
-per game and language from **Admin → Scan catalogs**: it downloads that game's card
-list and fingerprints every card's artwork — hours for a full English game, and
-about 5 MB of output per 10,000 cards. Progress is live, stopping keeps what it
-has, and resuming reuses it. `--catalogs` on the fetch command above grabs
-prebuilt English Magic and Pokémon catalogs instead, which answer immediately but
-only resolve cards your install has already seen.
+**2. A vision model.** Once the card is detected, Bindarr sends the photo to a
+generative vision model that names the card and reads its set, number and
+language as JSON. Set the endpoint, model and API key in **Admin → Instance
+Settings** (or with `VISION_BASE_URL`, `VISION_MODEL`, `VISION_API_KEY` in the
+environment). Any OpenAI-compatible `/chat/completions` endpoint works —
+OpenAI, OpenRouter, Groq, or a local Ollama/LM Studio/vLLM server. Without it,
+`/api/scan-match` returns a clear `503 notBuilt` instead of guessing.
 
-Scanning is then the same whether or not you tell it which set you are feeding.
-Naming the set just restricts the comparison to that set's cards, which is faster
-and more accurate, and needs no preparation.
+The identity the model returns is then resolved through the normal provider
+search and saved like any other card, so prices, storage and the picker all work
+exactly as they do for a manual search.
 
-Coverage is only as good as the card data available for a language: the panel shows
-what a catalog holds against what the provider claims exists, e.g. *3,297 of
-16,192* for Japanese Pokémon, where the upstream data simply stops. A card outside
-the catalog is reported as missing rather than guessed at, with the nearest matches
-offered underneath.
-
-The pipeline, its accuracy numbers, and the measurement harness are documented in
+The detector's pipeline and license are documented in
 [PROJECT.md](PROJECT.md#image-identification-pipeline).
 
 ---
@@ -487,9 +480,10 @@ This is the language of the *app*. The language a card was printed in is a separ
 - Proyecto original: **[Bindarr](https://github.com/thenotoriousJeremy/bindarr)**,
   creado por [thenotoriousJeremy](https://github.com/thenotoriousJeremy) y sus
   colaboradores. Licencia MIT.
-- Los modelos de escaneo (`cornelius` y `milo`) son **AGPL-3.0** y **no** se
-  incluyen en este repositorio ni en la imagen Docker: los descarga aparte quien
-  despliega la instancia.
+- El modelo de detección de escaneo (`cornelius`) es **AGPL-3.0** y **no** se
+  incluye en este repositorio ni en la imagen Docker: lo descarga aparte quien
+  despliega la instancia. La identificación de cartas usa una IA de visión
+  configurable, no un modelo incluido.
 - **Este port no oficial** solo añade compatibilidad con EasyPanel/proxy,
   configuración de despliegue y empaquetado. No reclama ningún crédito sobre el
   trabajo del proyecto original.

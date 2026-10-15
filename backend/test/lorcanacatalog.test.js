@@ -1,14 +1,12 @@
-// Tests for Lorcana catalog discovery, set listing, and card caching.
+// Tests for Lorcana set discovery, card caching and locale handling.
 const assert = require('assert');
 const path = require('path');
 const os = require('os');
 
 process.env.DB_PATH = path.join(os.tmpdir(), `bindarr-lorcanacat-${process.pid}.db`);
 const db = require('../src/db');
-const catalog = require('../src/catalog');
 const cardSets = require('../src/cardSets');
 const lorcastApi = require('../src/lorcastApi');
-const modelAssets = require('../src/utils/modelAssets');
 
 const SAMPLE_SETS = [
   { id: 'set_1', name: 'The First Chapter', code: '1', released_at: '2023-08-18' },
@@ -96,27 +94,11 @@ async function main() {
   assert.strictEqual(prodRows.length, 1);
   assert.strictEqual(prodRows[0].product_id, 501001);
 
-  // 3. Catalog list includes Lorcana
-  const catList = await catalog.list();
-  const lorcanaRow = catList.find(c => c.game === 'lorcana' && c.lang === 'English');
-  assert.ok(lorcanaRow, 'catalog list should include Lorcana English');
-  assert.strictEqual(lorcanaRow.cached, 2, 'should report 2 cached cards');
-  assert.strictEqual(lorcanaRow.withArt, 2, 'should report 2 cards with artwork');
-
-  // 4. Set counts
-  const sc = await catalog.setCounts('lorcana', 'English');
-  assert.ok(sc.sets['lorcana-1'], 'should have counts for lorcana-1');
-  assert.ok(sc.sets['1'], 'should have counts for bare set code 1');
-  assert.strictEqual(sc.sets['1'].cached, 2);
-
-  // 5. Bulk cacheAllCards
+  // 3. Bulk cacheAllCards
   const allCached = await lorcastApi.cacheAllCards();
   assert.strictEqual(allCached.length, 2);
 
-  // 6. Catalog GAMES includes Lorcana
-  assert.ok(catalog.GAMES.includes('lorcana'), 'catalog.GAMES should include Lorcana');
-
-  // 7. Cache cards for set 1 in French
+  // 4. Cache cards for set 1 in French
   const cachedFr = await cardSets.cacheSetCards('lorcana', '1', 'French');
   assert.strictEqual(cachedFr.length, 2);
   assert.strictEqual(cachedFr[0].name, 'Elsa - Reine des neiges');

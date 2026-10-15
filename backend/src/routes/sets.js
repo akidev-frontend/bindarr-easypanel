@@ -6,8 +6,21 @@ const router = express.Router();
 router.get('/', async (req, res) => {
   try {
     const { game, lang } = req.query;
-    if (game === 'pokemon' && await require('../utils/pokemonProvider').providerFor(lang) === 'pokemontcgapi') {
+    const provider = game === 'pokemon'
+      ? await require('../utils/pokemonProvider').providerFor(lang)
+      : null;
+    if (provider === 'pokemontcgapi') {
       return res.json(await require('../pokemontcgapi').listSets(lang));
+    }
+    // Korean sets come from tcgexchange (TCGdex has Korean metadata but no
+    // images, so its set list would offer sets the catalog build skips).
+    if (provider === 'tcgexchange') {
+      try {
+        return res.json(await require('../tcgexchangeApi').listSets(lang));
+      } catch (err) {
+        console.error(`Failed to fetch Korean sets from tcgexchange:`, err.message);
+        return res.json([]);
+      }
     }
     // Non-English Pokémon sets are a different list entirely — Japan gets sets the
     // West never sees — and they are not in the `sets` table, which is keyed by id

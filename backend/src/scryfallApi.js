@@ -704,9 +704,9 @@ async function updateCollectionPrices(force = false) {
 // The same printing in another language, or null.
 //
 // Scanning identifies a card from ARTWORK, which is identical in every language,
-// so a Japanese card is matched against the English catalog and comes back as the
-// English printing (cvScan.load says so outright, and leaves re-expressing the
-// answer to the caller — this is that). Set code and collector number ARE
+// so a Japanese card is read from its art and the provider row behind it is often
+// the English printing; re-expressing that answer in the scanned language is the
+// caller's job, and this is the lookup it uses. Set code and collector number ARE
 // language-invariant, so they address the printing; /cards/:code/:number/:lang is
 // the one Scryfall endpoint that takes a language, unlike /cards/collection.
 //

@@ -1,10 +1,10 @@
 // A scanned card must come back in the language being scanned.
 //
-// Card ART is identical in every language, so the scanner matches a Japanese card
-// against whatever catalog exists (English, for most installs) and gets the
-// ENGLISH printing back. The scan route re-expresses that answer via
-// getPrintingInLang; without it a Japanese scan filed an English printing, with
-// English art and an English name, no matter what Card Language was set to.
+// Card ART is identical in every language, so a scanner reads a card whatever
+// language it is printed in, and the provider row it lands on is often the
+// English printing. The scan route re-expresses that answer via getPrintingInLang;
+// without it a Japanese scan filed an English printing, with English art and an
+// English name, no matter what Card Language was set to.
 //
 // Scryfall is stubbed: this checks the lookup asks for the right thing and
 // classifies the answer correctly, not that Scryfall is up.
@@ -105,79 +105,11 @@ process.env.DB_PATH = require('path').join(
   const beforePtcg = asked.length;
   assert.strictEqual(await tcgdex.getPrintingInLang('basep-50', 'French'), null);
   assert.strictEqual(asked.length, beforePtcg, 'a pokemontcg.io id must not be requested');
-  // Already in the requested language (a catalog built in it): nothing to do.
+  // Already in the requested language: nothing to do.
   const beforeSame = asked.length;
   assert.strictEqual(await tcgdex.getPrintingInLang('tcgdex-ja-S12-001', 'Japanese'), null);
   assert.strictEqual(asked.length, beforeSame, 'same-language id must not be requested');
 
-  // ---- Korean (and Japanese, and Chinese) --------------------------------
-  //
-  // getPrintingInLang can only ever return null for these: their sets are their
-  // own releases (SM1M, S12, SV2a), not localised editions of the English ones, so
-  // there is no id to swap to. The scan therefore has to answer with the English
-  // card — and the two things that must be true of that answer are checked here
-  // against the real route, because both used to be false:
-  //
-  //   · it has to BE an answer. The candidate was resolved by set + collector
-  //     number through the provider for the SCANNED language, and the set id came
-  //     from TCGplayer's English catalogue, so a Korean scan asked TCGdex/ko about
-  //     'base6' and got nothing — every candidate unresolvable, "no confident
-  //     match", while the same photo scanned as English named the card at once.
-  //   · it has to say it is English art. An unmarked English row is exactly what a
-  //     genuine English printing looks like.
-  const router = require('../src/routes/collection');
-  const scanLayer = router.stack.find(l => l.route && l.route.path === '/scan-match');
-  const scanMatch = scanLayer.route.stack[scanLayer.route.stack.length - 1].handle;
-
-  // Pinned, because the English retry goes through the CONFIGURED English provider
-  // rather than a hardcoded one (utils/pokemonProvider): with pokemontcg.io set,
-  // the two lookups land on two different modules, which is the arrangement worth
-  // checking. TCGdex-configured installs differ only in that both calls are TCGdex,
-  // one per language.
-  await db.run(`UPDATE app_settings SET pokemon_provider = 'pokemontcg' WHERE id = 1`);
-
-  const cvScan = require('../src/cvScan');
-  const tcgplayerCatalog = require('../src/tcgplayerCatalog');
-  const tcgApi = require('../src/tcgApi');
-  cvScan.isBuilt = () => true;
-  cvScan.match = async () => ({ verified: false, candidates: [{ productId: 42, score: 0.91 }] });
-  // The published Pokémon catalog is TCGplayer's ENGLISH products, whatever
-  // language is being scanned.
-  tcgplayerCatalog.lookup = async () => ({ name: 'Charizard', set_id: 'base6', number: '96' });
-  const koAsked = [];
-  tcgdex.searchCards = async ({ set, lang }) => {
-    koAsked.push({ set, lang });
-    return { cards: [], total: null };   // 'base6' does not exist in Korean
-  };
-  tcgApi.searchCards = async ({ number, set }) => ({
-    cards: set === 'base6' && number === '96'
-      ? [{ id: 'base6-96', name: 'Charizard', number: '96', set_id: 'base6', set_name: 'Legendary Collection', language: 'English', image_url: 'https://img/en.png' }]
-      : [],
-    total: null,
-  });
-
-  const scan = async (lang) => {
-    let body = null;
-    await scanMatch(
-      { body: { game: 'pokemon', image: 'x'.repeat(200), lang }, user: { tcg_api_key: '' }, query: {} },
-      { json: (b) => { body = b; }, status() { return this; } },
-    );
-    return body;
-  };
-
-  const ko = await scan('ko');
-  const kCard = ko.candidates[0].card;
-  assert.ok(kCard, 'a Korean scan must resolve the candidate, not drop it');
-  assert.strictEqual(kCard.id, 'base6-96', 'the English printing is the only one that exists');
-  assert.strictEqual(kCard.langFallback, 'Korean', 'and it must be marked as standing in for Korean');
-  assert.deepStrictEqual(koAsked, [{ set: 'base6', lang: 'ko' }], 'Korean is asked first, and only once');
-
-  // English asks once and carries no marker — there is nothing to disclaim.
-  const en = await scan('en');
-  assert.strictEqual(en.candidates[0].card.id, 'base6-96');
-  assert.strictEqual(en.candidates[0].card.langFallback, undefined, 'an English scan must not be marked');
-  assert.strictEqual(koAsked.length, 1, 'an English scan must not consult TCGdex');
-
-  console.log('scanlang.test.js: all 26 assertions passed');
+  console.log('scanlang.test.js: all 14 assertions passed');
   process.exit(0);
 })().catch((e) => { console.error(e); process.exit(1); });

@@ -5,7 +5,6 @@ const path = require('path');
 const db = require('../db');
 const tcgApi = require('../tcgApi');
 const scryfallApi = require('../scryfallApi');
-const catalog = require('../catalog');
 const { parseCardRow } = require('../utils/priceHelpers');
 const languages = require('../utils/languages');
 const { authenticateToken, requireAdmin } = require('../middleware/auth');
@@ -286,89 +285,20 @@ router.delete('/users/:id', async (req, res) => {
 
 
 
-// --- Set-index build management ---
-
-const isGame = (g) => g === 'mtg' || g === 'pokemon' || g === 'lorcana';
-
-// List persisted builds plus any in-flight/recent build progress.
-// --- Catalogs -------------------------------------------------------------
+// --- Scan models ---
 //
-// A catalog is one (game, language). Building it caches every set's cards and
-// then embeds their artwork; scanning searches the result. This replaced the
-// per-set and whole-game ORB index endpoints, which asked the user to reason
-// about scan indexes, recall depth and set scoping to get a working scanner.
-// There is one thing to build now, and the list below says how complete it is.
-router.get('/catalogs', async (req, res) => {
-  try {
-    res.json({
-      catalogs: await catalog.list(),
-      progress: catalog.state(),
-      last: catalog.lastResult(),
-    });
-  } catch (e) {
-    console.error('catalog list failed:', e.message);
-    res.status(500).json({ error: 'Could not list catalogs' });
-  }
+// Scanning detects the card locally with cornelius (onnxruntime-web in the
+// browser) and identifies it with a vision model configured in Instance Settings.
+// The only downloadable asset left is that corner-detection model; see
+// utils/modelAssets for why it is a deliberate download rather than part of the
+// image (licensing).
+router.get('/models', (req, res) => {
+  res.json(require('../utils/modelAssets').status());
 });
 
-// The non-English catalogs that can be built at all, with per-language counts.
-//
-// Separate from /catalogs because it costs a provider set list per language and
-// /catalogs is polled every second during a build. The panel asks for this once,
-// when the user opens the language section.
-router.get('/catalogs/languages', async (req, res) => {
-  try {
-    res.json({ languages: await catalog.listLanguages(String(req.query.game || 'pokemon')) });
-  } catch (e) {
-    console.error('listLanguages failed:', e.message);
-    res.status(500).json({ error: 'Could not list languages' });
-  }
-});
-
-router.post('/catalogs/build', (req, res) => {
-  // `sets` scopes the build to the sets the user actually has in front of them,
-  // which is minutes instead of hours. Omit it for the whole game. A scoped build
-  // MERGES into the existing catalog (catalog.js embedPhase), so building one set
-  // never discards the sets built before it.
-  const { game, lang, skipCache, sets } = req.body || {};
-  try {
-    res.json({ progress: catalog.start(game, lang, { skipCache: !!skipCache, sets: Array.isArray(sets) ? sets : [] }) });
-  } catch (e) {
-    // "already running" is a conflict, not a server fault — the UI shows the
-    // running build rather than an error.
-    res.status(409).json({ error: e.message, progress: catalog.state() });
-  }
-});
-
-// The scan engine's downloadable pieces: what is installed, what it would cost,
-// and the licence the models carry. See utils/modelAssets for why the models are
-// a deliberate download rather than part of the image.
-router.get('/models', async (req, res) => {
-  // The product map ships with the ready-made Pokémon catalog's state because it is
-  // that catalog's other half: product ids with nothing to look them up in name no
-  // cards at all.
-  res.json({
-    ...require('../utils/modelAssets').status(),
-    productMap: await require('../tcgplayerCatalog').summary(),
-  });
-});
-
-// Build (or refresh) the TCGplayer product map. A download of the ready-made
-// Pokémon catalog starts this on its own — this is the button for refreshing it
-// after a set release, or recovering from a run that failed halfway.
-router.post('/models/product-map', (req, res) => {
-  const productMap = require('../tcgplayerCatalog');
-  try {
-    if (req.body && req.body.stop) return res.json({ stopped: productMap.stop() });
-    res.json({ progress: productMap.start() });
-  } catch (e) {
-    res.status(409).json({ error: e.message, progress: productMap.state() });
-  }
-});
-
-// `what`: 'models' or 'catalog:mtg' / 'catalog:pokemon'. Downloading is the
-// operator's own act on their own install — which is precisely why it is a button
-// they press rather than something that happens on startup.
+// `what`: 'models'. Downloading is the operator's own act on their own install —
+// which is precisely why it is a button they press rather than something that
+// happens on startup.
 router.post('/models/download', (req, res) => {
   const modelAssets = require('../utils/modelAssets');
   try {
@@ -376,16 +306,6 @@ router.post('/models/download', (req, res) => {
   } catch (e) {
     res.status(409).json({ error: e.message, progress: modelAssets.state() });
   }
-});
-
-router.post('/catalogs/stop', (req, res) => {
-  res.json({ stopped: catalog.stop(), progress: catalog.state() });
-});
-
-// Progress is polled while a build runs, so it stays cheap: in-memory counters,
-// no database and no filesystem.
-router.get('/catalogs/progress', (req, res) => {
-  res.json({ progress: catalog.state(), last: catalog.lastResult() });
 });
 
 router.get('/backups', (req, res) => {

@@ -63,7 +63,8 @@ async function getEffectiveSettings() {
   const row = await db.get(`
     SELECT public_base_url, pokemon_provider, price_refresh_days,
            scan_exclude_tokens, scan_exclude_art_cards, scan_exclude_jumpstart, scan_exclude_promos,
-           scan_exclude_digital, setup_complete
+           scan_exclude_digital, setup_complete,
+           vision_base_url, vision_model, vision_api_key
     FROM app_settings WHERE id = 1
   `);
   const public_base_url = (row && row.public_base_url) || process.env.PUBLIC_BASE_URL || '';
@@ -80,6 +81,11 @@ async function getEffectiveSettings() {
   // the column existed. 0 means automatic refreshes are off.
   const n = Number(row && row.price_refresh_days);
   const price_refresh_days = Number.isInteger(n) && n >= 0 ? n : 1;
+  // Vision model configuration. The key is never returned — only whether one is
+  // present — because this response is readable by any logged-in user.
+  const vision_base_url = (row && row.vision_base_url) || process.env.VISION_BASE_URL || '';
+  const vision_model = (row && row.vision_model) || process.env.VISION_MODEL || '';
+  const vision_configured = !!((row && row.vision_api_key) || process.env.VISION_API_KEY || vision_base_url);
   return {
     public_base_url,
     pokemon_provider,
@@ -90,6 +96,9 @@ async function getEffectiveSettings() {
     scan_exclude_promos,
     scan_exclude_digital,
     setup_complete,
+    vision_base_url,
+    vision_model,
+    vision_configured,
   };
 }
 
@@ -115,6 +124,9 @@ router.put('/', requireAdmin, async (req, res) => {
     scan_exclude_promos,
     scan_exclude_digital,
     setup_complete,
+    vision_base_url,
+    vision_model,
+    vision_api_key,
   } = req.body;
 
   if (pokemon_provider !== undefined) {
@@ -137,7 +149,6 @@ router.put('/', requireAdmin, async (req, res) => {
           const source = await require('../utils/pokemonProvider').apiFor('en');
           await source.fetchAndCacheSets(true);
           await require('../utils/compartmentSort').loadSetsCache(db);
-          require('../tcgplayerCatalog').start();
         } catch (e) {
           console.error(`Provider switch follow-up failed: ${e.message}`);
         }
@@ -168,6 +179,22 @@ router.put('/', requireAdmin, async (req, res) => {
   }
   if (scan_exclude_digital !== undefined) {
     await db.run(`UPDATE app_settings SET scan_exclude_digital = ? WHERE id = 1`, [scan_exclude_digital ? 1 : 0]);
+  }
+
+  // Vision model overrides. Empty strings clear an override and fall back to the
+  // environment. The API key is write-only: it is stored, never echoed back.
+  if (vision_base_url !== undefined) {
+    const trimmed = String(vision_base_url).trim().replace(/\/+$/, '');
+    if (trimmed && !/^https?:\/\//i.test(trimmed)) {
+      return res.status(400).json({ error: 'Vision base URL must start with http:// or https://' });
+    }
+    await db.run(`UPDATE app_settings SET vision_base_url = ? WHERE id = 1`, [trimmed]);
+  }
+  if (vision_model !== undefined) {
+    await db.run(`UPDATE app_settings SET vision_model = ? WHERE id = 1`, [String(vision_model).trim()]);
+  }
+  if (vision_api_key !== undefined) {
+    await db.run(`UPDATE app_settings SET vision_api_key = ? WHERE id = 1`, [String(vision_api_key).trim()]);
   }
 
   if (setup_complete !== undefined) {

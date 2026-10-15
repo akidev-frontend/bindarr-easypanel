@@ -2,10 +2,10 @@
 // set's cards into card_cache.
 //
 // This file used to build per-set ORB feature indexes for set-scoped scanning.
-// That pipeline is gone — scanning is CollectorVision embeddings now (cvScan +
-// catalog) — and filling card_cache, which had only ever run as a SIDE EFFECT of
-// indexing, is what survives as a job in its own right. Its ORB imports (opencv,
-// sharp, fs) and tuning constants went with it; nothing here reads pixels.
+// That pipeline is gone — identification is a vision model now (utils/visionApi)
+// — and filling card_cache, which had only ever run as a SIDE EFFECT of indexing,
+// is what survives as a job in its own right. Its ORB imports (opencv, sharp, fs)
+// and tuning constants went with it; nothing here reads pixels.
 const axios = require('axios');
 const languages = require('./utils/languages');
 // The one place that decides pokemontcg.io vs TCGdex. Every branch below asks it
@@ -14,6 +14,9 @@ const languages = require('./utils/languages');
 const pokemonProvider = require('./utils/pokemonProvider');
 // scryfallApi/tcgApi are lazy-required inside the build/preview paths only — they
 // pull in the DB module, which verify-only worker threads must not load.
+// cacheNormalizedCards is needed by the Korean (tcgexchange) branch below, which
+// writes already-normalized rows directly instead of through a provider cache.
+const { cacheNormalizedCards } = require('./utils/cardCache');
 
 const http = axios.create({ timeout: 30000, headers: { 'User-Agent': 'Bindarr/1.0', 'Accept': 'application/json' } });
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -210,11 +213,17 @@ async function listAllSets(game, lang) {
     return rows.map(r => r.ptcgo_code || r.id.replace(/^lorcana-/, ''));
   }
   if (game === 'pokemon') {
-    if (await pokemonProvider.providerFor(code) === pokemonProvider.POKEMONTCGAPI) {
+    const provider = await pokemonProvider.providerFor(code);
+    if (provider === pokemonProvider.POKEMONTCGAPI) {
       return (await require('./pokemontcgapi').listSets(code)).filter(s => s.total > 0).map(s => s.id);
     }
+    // Korean: tcgexchange has images; TCGdex does not. Same shape as TCGdex's list.
+    if (provider === pokemonProvider.TCGEXCHANGE) {
+      const sets = await require('./tcgexchangeApi').listSets(code).catch(() => []);
+      return sets.filter(s => s.id && (s.total || s.printed_total || 0) > 0).map(s => s.id);
+    }
     const exclusions = await getScanExclusions();
-    if (await pokemonProvider.usesTcgdex(code)) {
+    if (provider === pokemonProvider.TCGDEX) {
       const tcgdexApi = require('./tcgdexApi');
       const sets = await tcgdexApi.listSets(code);
       const digital = exclusions.digital ? await digitalSetIds(code) : new Set();
@@ -321,10 +330,9 @@ async function fetchTcgdexSet(set, lang) {
       name: brief.name || '',
       set: r.data.id || set,
       number: brief.localId != null ? String(brief.localId) : '',
-      // High res on purpose: the 245px art the card grids use is what milo would
-      // otherwise be handed, and an upscaled blur embeds worse than the sharp 448
-      // crop a camera produces. See catalog.js embedUrl for the same swap on the
-      // cached url.
+      // High res on purpose: the 245px art the card grids use is a blurry input
+      // for anything that reads the card, and the sharper image is worth the
+      // bandwidth when caching into card_cache.
       img: `${brief.image}/high.png`,
       raw: { ...brief, set: { id: r.data.id || set, name: setName } },
       tcgdex: true,
@@ -400,6 +408,14 @@ async function cacheSetCards(game, set, lang, { excludeChildCodes = [] } = {}) {
   if (provider === pokemonProvider.POKEMONTCGAPI) {
     const cards = await require('./pokemontcgapi').getCardsBySet(set, code);
     if (!cards.length) throw absent(`no cards for set ${set}`);
+    return cards.map(c => ({ name: c.printed_name || c.name, set: c.set_id, number: c.number, img: c.image_url, raw: c }));
+  }
+  // Korean: tcgexchange returns already-normalized card_cache rows.
+  if (provider === pokemonProvider.TCGEXCHANGE) {
+    const cards = await require('./tcgexchangeApi').getCardsBySet(set, code);
+    if (!cards.length) throw absent(`tcgexchange has no cards for Korean set ${set}`);
+    // Write straight through — these are card_cache-shaped, not briefs.
+    await cacheNormalizedCards(cards, 'pokemon');
     return cards.map(c => ({ name: c.printed_name || c.name, set: c.set_id, number: c.number, img: c.image_url, raw: c }));
   }
   const useTcgdex = provider === pokemonProvider.TCGDEX;

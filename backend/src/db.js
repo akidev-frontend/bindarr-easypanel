@@ -536,6 +536,20 @@ async function initDb() {
     await run(`ALTER TABLE app_settings ADD COLUMN setup_complete INTEGER NOT NULL DEFAULT 0`);
   }
 
+  // The vision model that identifies scanned cards. Env-first with an admin
+  // override (see utils/visionApi.js): the columns start empty and an empty value
+  // means "fall back to VISION_* in the environment". The API key lives here so an
+  // admin can rotate it without a redeploy; it is never sent back to a client.
+  if (!appSettingsCols.some(c => c.name === 'vision_base_url')) {
+    await run(`ALTER TABLE app_settings ADD COLUMN vision_base_url TEXT DEFAULT ''`);
+  }
+  if (!appSettingsCols.some(c => c.name === 'vision_model')) {
+    await run(`ALTER TABLE app_settings ADD COLUMN vision_model TEXT DEFAULT ''`);
+  }
+  if (!appSettingsCols.some(c => c.name === 'vision_api_key')) {
+    await run(`ALTER TABLE app_settings ADD COLUMN vision_api_key TEXT DEFAULT ''`);
+  }
+
   // A non-English printing is its own card, not a display variant of the English
   // one: it has its own provider id, its own art and its own name. `language`
   // records which printing a cached row IS (collection.language still records

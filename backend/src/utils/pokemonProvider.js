@@ -29,6 +29,7 @@ const languages = require('./languages');
 const TCGDEX = 'tcgdex';
 const POKEMONTCG = 'pokemontcg';
 const POKEMONTCGAPI = 'pokemontcgapi';
+const TCGEXCHANGE = 'tcgexchange';
 
 // The rule itself, pure and synchronous so it can be tested without a database.
 //
@@ -36,10 +37,17 @@ const POKEMONTCGAPI = 'pokemontcgapi';
 // cards, so its non-English requests use TCGdex. For
 // English, the setting decides — and the setting is what built the indexes, the
 // caches and the set lists, so following it is what keeps them consistent.
+//
+// Korean is the exception: TCGdex serves Korean METADATA but ZERO Korean images
+// (all assets.tcgdex.net/ko/ paths 404), so a Korean catalog build skips every
+// set. tcgexchange.kr has all 277 Korean sets / 20,187 cards WITH images, no key
+// needed. Korean always routes there regardless of the setting.
 function decide(setting, lang) {
   // Opt-in only. Other languages keep TCGdex because translating a Western
   // card's name does not supply that language's physical printing or artwork.
   if (setting === POKEMONTCGAPI && ['en', 'ja', 'zh-cn'].includes(languages.toCode(lang))) return POKEMONTCGAPI;
+  // Korean: tcgexchange has images; TCGdex does not. Always route here.
+  if (languages.toCode(lang) === 'ko') return TCGEXCHANGE;
   if (!languages.isEnglish(lang)) return TCGDEX;
   return setting === TCGDEX ? TCGDEX : POKEMONTCG;
 }
@@ -96,7 +104,8 @@ function sunsetNotice(provider, now = Date.now()) {
 async function apiFor(lang) {
   const provider = await providerFor(lang);
   if (provider === POKEMONTCGAPI) return require('../pokemontcgapi');
+  if (provider === TCGEXCHANGE) return require('../tcgexchangeApi');
   return provider === TCGDEX ? require('../tcgdexApi') : require('../tcgApi');
 }
 
-module.exports = { decide, configured, providerFor, usesTcgdex, apiFor, sunsetNotice, POKEMONTCG_SUNSET, TCGDEX, POKEMONTCG, POKEMONTCGAPI };
+module.exports = { decide, configured, providerFor, usesTcgdex, apiFor, sunsetNotice, POKEMONTCG_SUNSET, TCGDEX, POKEMONTCG, POKEMONTCGAPI, TCGEXCHANGE };

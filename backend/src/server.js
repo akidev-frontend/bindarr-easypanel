@@ -81,19 +81,20 @@ function checkScanModels() {
     fs.writeFileSync(probe, '');
     fs.unlinkSync(probe);
   } catch (err) {
-    console.error(`STARTUP: ${dir} is not writable (${err.code}) — catalog builds will fail.`);
+    console.error(`STARTUP: ${dir} is not writable (${err.code}) — the scan detector cannot be installed.`);
     console.error('STARTUP: fix it with  docker exec -u root <container> chown -R node:node /app/database');
     return;
   }
-  // The models ship in neither the image nor the repository: they are AGPL-3.0
-  // while Bindarr is MIT, so fetching them is the operator's deliberate step. That
-  // makes "no models" the ordinary state of a fresh install rather than a fault,
-  // and it deserves the command that fixes it instead of silence until someone
-  // points a camera at a card.
-  const missing = ['cornelius.onnx', 'milo.onnx'].filter(f => !fs.existsSync(path.join(dir, f)));
+  // The corner-detection model ships in neither the image nor the repository: it
+  // is AGPL-3.0 while Bindarr is MIT, so fetching it is the operator's deliberate
+  // step. That makes "no model" the ordinary state of a fresh install rather than
+  // a fault, and it deserves the command that fixes it instead of silence until
+  // someone points a camera at a card. Identification itself is a vision model
+  // (utils/visionApi), configured in Admin → Instance Settings.
+  const missing = ['cornelius.onnx'].filter(f => !fs.existsSync(path.join(dir, f)));
   if (missing.length) {
-    console.warn(`STARTUP: scan models missing from ${dir} (${missing.join(', ')}) — card scanning is disabled.`);
-    console.warn('STARTUP: fetch them with  node scripts/fetch-models.mjs   (Docker: docker exec <container> node scripts/fetch-models.mjs)');
+    console.warn(`STARTUP: scan detector missing from ${dir} (${missing.join(', ')}) — card scanning is disabled.`);
+    console.warn('STARTUP: fetch it with  node scripts/fetch-models.mjs   (Docker: docker exec <container> node scripts/fetch-models.mjs)');
   }
 }
 checkScanModels();
@@ -230,38 +231,6 @@ app.use('/api/scan-match', bigJson);
 app.use('/api/search', bigJson);
 app.use(express.json({ limit: '1mb' }));
 
-// Rebuild any catalog that has fallen behind, right after the weekly set refresh
-// discovers new releases.
-//
-// Without this, a released set lands in the set list and the catalog silently keeps
-// answering: a scan of a brand-new card does not fail, it returns the nearest wrong
-// card at a confident-looking score. Nobody presses Update because nothing tells
-// them to.
-//
-// Deliberately conservative. It only touches catalogs that ALREADY exist — it never
-// creates one, because that is an hours-long job nobody asked for — and it skips
-// entirely while a build is running, since catalog.start refuses a second one
-// anyway. The embed phase reuses every unchanged vector, so the real cost is
-// downloading and embedding only the new cards.
-//
-// ponytail: env var rather than an app_settings column + settings UI + eleven
-// translations. Promote it if users want per-install control from the web UI.
-async function autoUpdateCatalogs() {
-  if (process.env.CATALOG_AUTO_UPDATE === '0') return;
-  const catalog = require('./catalog');
-  if (catalog.state()) return;
-  try {
-    for (const c of await catalog.list()) {
-      if (!c.built || !c.newSets) continue;
-      console.log(`catalog: ${c.game}/${c.lang} is ${c.newSets} set(s) behind — updating (CATALOG_AUTO_UPDATE=0 to disable)`);
-      catalog.start(c.game, c.lang);
-      return;   // one at a time; the next tick picks up the next one
-    }
-  } catch (err) {
-    console.error('Catalog auto-update check failed:', err.message);
-  }
-}
-
 // Initialize Database on startup
 let dbReady = false;
 db.initDb()
@@ -280,6 +249,11 @@ db.initDb()
     // unconditionally, so a TCGdex install browsed a set list numbered by a
     // provider none of its cards came from.
     await (await pokemonSetSource()).fetchAndCacheSets();
+    // Korean sets live in tcgexchange regardless of the English provider setting
+    // (decide() pins ko to tcgexchange), so sync them unconditionally. Failure is
+    // non-fatal: the Korean build will just have no set list to walk.
+    await require('./tcgexchangeApi').fetchAndCacheSets().catch(e =>
+      console.warn(`Korean set sync failed (non-fatal): ${e.message}`));
     await scryfallApi.fetchAndCacheSets();
     await lorcastApi.fetchAndCacheSets();
 
@@ -295,30 +269,6 @@ db.initDb()
     const { loadSetsCache } = require('./utils/compartmentSort');
     await loadSetsCache(db);
 
-    // Warm the scan models and catalogs. Two ONNX sessions plus an embedding table
-    // take ~400 ms to load; paying that on the first scan instead would make the
-    // slowest scan of a session the one a user is most likely to judge. Not awaited
-    // — listening must not wait on it, and a scan arriving before it finishes just
-    // pays the load itself.
-    try {
-      const cvScan = require('./cvScan');
-      const warm = ['mtg', 'pokemon', 'lorcana'].filter(g => cvScan.isBuilt(g));
-      for (const g of warm) {
-        cvScan.load(g).catch(err => console.warn(`cvScan ${g} warm-up failed:`, err.message));
-        // Locally built non-English catalogs too (e.g. German Pokémon, #80): they
-        // were only loaded by the first scan in that language, which then paid the
-        // whole catalog read.
-        for (const lang of cvScan.builtLangs(g).filter(l => l !== 'English')) {
-          cvScan.load(g, lang).catch(err => console.warn(`cvScan ${g} ${lang} warm-up failed:`, err.message));
-        }
-      }
-      // There is no second matcher to fall back to, so say what is missing. The
-      // models alone identify nothing.
-      if (!warm.length) console.warn('cvScan: no catalogs present — scanning is disabled until one is built (Admin → Catalogs)');
-    } catch (err) {
-      console.warn('cvScan unavailable:', err.message);
-    }
-
     // Weekly: refresh sets (picks up newly released ones) and reload the
     // in-memory sets cache so chronological sorting stays current without a
     // restart. Scryfall's guidance is that gameplay/set data changes rarely and
@@ -329,7 +279,6 @@ db.initDb()
         await scryfallApi.fetchAndCacheSets(true);
         await lorcastApi.fetchAndCacheSets(true);
         await loadSetsCache(db);
-        await autoUpdateCatalogs();
       } catch (err) {
         console.error('Weekly sets refresh failed:', err);
       }

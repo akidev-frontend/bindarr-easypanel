@@ -107,22 +107,24 @@ es notable.
 
 ## 5. Escaneo con cámara (opcional)
 
-El escaneo necesita dos cosas que **no** vienen dentro de la imagen (los modelos
-ONNX son AGPL-3.0 y Bindarr es MIT, así que se descargan aparte):
+El escaneo necesita dos cosas: un detector local que **no** viene dentro de la
+imagen (el modelo ONNX es AGPL-3.0 y Bindarr es MIT, así que se descarga aparte)
+y una IA de visión configurable para identificar la carta.
 
-1. **Modelos** (~9,6 MB). En el VPS:
+1. **Detector** (~3,2 MB). En el VPS:
 
    ```sh
    docker exec bindarr node scripts/fetch-models.mjs
    # reinicia el contenedor después
    ```
 
-2. **Catálogos**: en la app, **Admin → Catalogs**, elige juego e idioma y
-   constrúyelo (tarda horas para un juego completo). También se pueden traer
-   catálogos ingleses prehechos con `node scripts/fetch-models.mjs --catalogs`.
+2. **IA de visión**: en la app, **Admin → Instance Settings**, indica el endpoint
+   OpenAI-compatible, el modelo y la API key. Sirve OpenAI, OpenRouter, Groq o un
+   servidor local (Ollama/LM Studio/vLLM). También por entorno:
+   `VISION_BASE_URL`, `VISION_MODEL`, `VISION_API_KEY`.
 
-Sin catálogo, el escaneo devuelve un error claro (`503 notBuilt`) en vez de
-adivinar. El resto de la app funciona igual.
+Sin la IA configurada, el escaneo devuelve un error claro (`503 notBuilt`) en vez
+de adivinar. El resto de la app funciona igual.
 
 ---
 

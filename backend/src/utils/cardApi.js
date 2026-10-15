@@ -3,10 +3,11 @@
 // The ID itself is the answer — it was minted by whichever provider supplied the
 // card, and only that provider can resolve it:
 //
-//   mtg-<uuid>          Scryfall
-//   tcgdex-<lang>-<id>  TCGdex
-//   pokemontcgapi-<id>  pokemontcgapi.com
-//   <anything else>     pokemontcg.io
+//   mtg-<uuid>            Scryfall
+//   tcgdex-<lang>-<id>    TCGdex
+//   pokemontcgapi-<id>    pokemontcgapi.com
+//   tcgexchange-kr-<id>   tcgexchange.kr (Korean)
+//   <anything else>       pokemontcg.io
 //
 // NOT the same question as utils/pokemonProvider. That one decides which provider
 // should SERVE a language when searching or building — a policy that follows a
@@ -25,11 +26,13 @@ const scryfallApi = require('../scryfallApi');
 const tcgApi = require('../tcgApi');
 const tcgdexApi = require('../tcgdexApi');
 const lorcastApi = require('../lorcastApi');
+const tcgexchangeApi = require('../tcgexchangeApi');
 const languages = require('./languages');
 
 const isMtgId = (id) => String(id || '').startsWith('mtg-');
 const isTcgdexId = (id) => String(id || '').startsWith('tcgdex-');
 const isPokemontcgapiId = id => String(id || '').startsWith('pokemontcgapi-');
+const isTcgexchangeId = id => String(id || '').startsWith('tcgexchange-kr-');
 const isLorcanaId = (id) => String(id || '').startsWith('lorcana-');
 
 // The game an ID implies. `game` from the request wins when explicit; otherwise inferred from prefix.
@@ -52,6 +55,9 @@ async function hydrate(id) {
     catch (e) { console.warn(`Could not hydrate ${id}: ${e.message}`); }
     return;
   }
+  // tcgexchange rows arrive complete from getCardsBySet (name/number/image/rarity);
+  // no thin-row hydration needed — hydrate is a no-op for them.
+  if (isTcgexchangeId(id)) return;
   if (!isTcgdexId(id)) return;
   try { await tcgdexApi.hydrateCard(id); }
   catch (e) { console.warn(`Could not hydrate ${id}: ${e.message}`); }
@@ -64,6 +70,7 @@ async function getCardById(id, { game, tcgApiKey = '' } = {}) {
   if (g === 'mtg') return await scryfallApi.getCardById(id);
   if (g === 'lorcana') return await lorcastApi.getCardById(id);
   if (isPokemontcgapiId(id)) return await require('../pokemontcgapi').getCardById(id);
+  if (isTcgexchangeId(id)) return await tcgexchangeApi.getCardById(id);
   if (isTcgdexId(id)) return await tcgdexApi.getCardById(id);
   return await tcgApi.getCardById(id, tcgApiKey);
 }
@@ -92,6 +99,10 @@ async function printingInLanguage(card, language) {
   if (g === 'pokemon') {
     // Regional set numbering cannot be translated by swapping a language code.
     if (isPokemontcgapiId(card.id)) return null;
+    // A Korean card: tcgexchange ids are Korean-only; the target language either
+    // has no Korean printing (return null → keep the row) or IS Korean (handled
+    // by the early return at the top). Never ask TCGdex to swap a tcgexchange id.
+    if (isTcgexchangeId(card.id)) return null;
     if (isTcgdexId(card.id)) {
       const match = await tcgdexApi.getPrintingInLang(card.id, language).catch(() => null);
       if (match) return match;
@@ -136,4 +147,4 @@ async function printingInLanguage(card, language) {
   return null;
 }
 
-module.exports = { isPokemontcgapiId, isMtgId, isTcgdexId, isLorcanaId, gameOf, hydrate, getCardById, printingInLanguage };
+module.exports = { isPokemontcgapiId, isMtgId, isTcgdexId, isTcgexchangeId, isLorcanaId, gameOf, hydrate, getCardById, printingInLanguage };

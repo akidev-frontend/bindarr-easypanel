@@ -11,7 +11,7 @@ Bindarr is a self-hosted, multi-user collection manager for Pokémon, Magic: The
 - `backend/src/server.js` is the composition root: middleware, route mounting, startup initialization/jobs, API/static serving, and optional TLS listener. Route order is security-sensitive: public auth/shared/card-art paths precede the authenticated `/api` gate.
 - `backend/src/routes/*.js` own HTTP/domain operations. Routes use `req.user.id` to scope records. Central decisions belong in existing utilities, especially `utils/pokemonProvider.js` for Pokémon source selection and `utils/cardApi.js` for card-ID provider dispatch.
 - `backend/src/db.js` owns the shared SQLite connection, schema initialization/migrations, Promise SQL helpers (`run`, `get`, `all`), and `withTransaction`. SQLite uses WAL; preserve its startup migration and transaction model.
-- Provider clients normalize external cards into the cached card shape before collection operations. Scan requests flow through `routes/collection.js` to `cvScan.js`, which matches images against catalog assets built by `catalog.js`.
+- Provider clients normalize external cards into the cached card shape before collection operations. Scan requests flow through `routes/collection.js`: card detection runs locally (`cornelius` via `frontend/src/utils/cardDetector.js`), identification calls the vision model in `utils/visionApi.js`, and the resulting identity is resolved through the normal provider search before saving.
 - Production builds `frontend/dist`; Express serves it after API routes. `/app/database` persists SQLite, backups, TLS material, models, and scan catalogs.
 
 ## Key Directories
